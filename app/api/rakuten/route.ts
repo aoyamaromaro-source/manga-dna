@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 const APP_ID = process.env.RAKUTEN_APP_ID!
+const ACCESS_KEY = process.env.RAKUTEN_ACCESS_KEY!
 
 export async function GET(req: NextRequest) {
   const title = req.nextUrl.searchParams.get('title')
@@ -10,6 +11,7 @@ export async function GET(req: NextRequest) {
 
   const params = new URLSearchParams({
     applicationId: APP_ID,
+    accessKey: ACCESS_KEY,
     title: title,
     hits: '5',
     format: 'json',
