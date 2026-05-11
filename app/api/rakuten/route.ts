@@ -57,3 +57,8 @@ export async function GET(req: NextRequest) {
       latestVol: latestVol || null,
       releaseDate,
       isFuture,
+    })
+  } catch (e) {
+    return NextResponse.json({ error: 'API error', detail: String(e) }, { status: 500 })
+  }
+}
