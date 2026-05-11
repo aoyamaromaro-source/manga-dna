@@ -1,43 +1,59 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+const APP_ID = process.env.RAKUTEN_APP_ID!
+const ACCESS_KEY = process.env.RAKUTEN_ACCESS_KEY!
+
 export async function GET(req: NextRequest) {
   const title = req.nextUrl.searchParams.get('title')
   if (!title) {
     return NextResponse.json({ error: 'title is required' }, { status: 400 })
   }
 
-  const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(title + ' 漫画')}&langRestrict=ja&maxResults=10&orderBy=newest`
+  const params = new URLSearchParams({
+    applicationId: APP_ID,
+    accessKey: ACCESS_KEY,
+    title: title,
+    hits: '5',
+    format: 'json',
+    booksGenreId: '001001',
+  })
+
+  const url = `https://openapi.rakuten.co.jp/bs/api/BooksBook/Search/20170404?${params}`
 
   try {
-    const response = await fetch(url)
+    const response = await fetch(url, {
+      headers: {
+        Referer: 'https://gleaming-jelly-a83f4c.netlify.app',
+      },
+    })
     const data = await response.json()
 
-    if (!data.items?.length) {
+    if (!data.Items?.length) {
       return NextResponse.json({ found: false })
     }
 
     let latestVol = 0
     let releaseDate = ''
 
-    for (const item of data.items) {
-      const t = item.volumeInfo?.title || ''
-      // タイトルに含まれる数字を巻数として取得
-      const volMatch = t.match(/[（(]?(\d+)[）)]?[巻冊]?$/) || t.match(/(\d+)$/) || t.match(/(\d+)/)
+    for (const { Item } of data.Items) {
+      const volMatch = Item.title?.match(/(\d+)/)
       if (volMatch) {
         const v = parseInt(volMatch[1])
-        if (v > latestVol && v < 200) { // 200巻以上は誤検知とみなす
+        if (v > latestVol) {
           latestVol = v
-          releaseDate = item.volumeInfo?.publishedDate || ''
+          releaseDate = Item.salesDate || ''
         }
       }
     }
 
     const today = new Date()
-    const rel = releaseDate ? new Date(releaseDate) : null
+    const rel = releaseDate
+      ? new Date(releaseDate.replace(/年|月/g, '-').replace(/日.*/, ''))
+      : null
     const isFuture = rel ? rel > today : false
 
     return NextResponse.json({
-      found: latestVol > 0,
+      found: true,
       latestVol: latestVol || null,
       releaseDate,
       isFuture,
