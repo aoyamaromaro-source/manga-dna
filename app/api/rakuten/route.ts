@@ -6,7 +6,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'title is required' }, { status: 400 })
   }
 
-  const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(title)}&langRestrict=ja&maxResults=5&orderBy=newest`
+  const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(title + ' 漫画')}&langRestrict=ja&maxResults=10&orderBy=newest`
 
   try {
     const response = await fetch(url)
@@ -21,10 +21,11 @@ export async function GET(req: NextRequest) {
 
     for (const item of data.items) {
       const t = item.volumeInfo?.title || ''
-      const volMatch = t.match(/(\d+)/)
+      // タイトルに含まれる数字を巻数として取得
+      const volMatch = t.match(/[（(]?(\d+)[）)]?[巻冊]?$/) || t.match(/(\d+)$/) || t.match(/(\d+)/)
       if (volMatch) {
         const v = parseInt(volMatch[1])
-        if (v > latestVol) {
+        if (v > latestVol && v < 200) { // 200巻以上は誤検知とみなす
           latestVol = v
           releaseDate = item.volumeInfo?.publishedDate || ''
         }
@@ -36,7 +37,7 @@ export async function GET(req: NextRequest) {
     const isFuture = rel ? rel > today : false
 
     return NextResponse.json({
-      found: true,
+      found: latestVol > 0,
       latestVol: latestVol || null,
       releaseDate,
       isFuture,
