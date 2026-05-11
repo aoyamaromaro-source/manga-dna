@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
     booksGenreId: '001001',
   })
 
-  const url = `https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404?${params}`
+  const url = `https://openapi.rakuten.co.jp/services/api/BooksBook/Search/20170404?${params}`
 
   try {
     const response = await fetch(url)
