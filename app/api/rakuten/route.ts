@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
     booksGenreId: '001001',
   })
 
-  const url = `https://openapi.rakuten.co.jp/bs/api/BooksBook/Search/20170404?${params}`
+  const url = `https://openapi.rakuten.co.jp/services/api/BooksBook/Search/20170404?${params}`
 
   try {
     const response = await fetch(url, {
@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
     const data = await response.json()
 
     if (!data.Items?.length) {
-      return NextResponse.json({ found: false })
+      return NextResponse.json({ found: false, debug: data })
     }
 
     let latestVol = 0
@@ -57,8 +57,3 @@ export async function GET(req: NextRequest) {
       latestVol: latestVol || null,
       releaseDate,
       isFuture,
-    })
-  } catch (e) {
-    return NextResponse.json({ error: 'API error' }, { status: 500 })
-  }
-}
