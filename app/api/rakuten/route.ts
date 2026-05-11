@@ -23,7 +23,8 @@ export async function GET(req: NextRequest) {
   try {
     const response = await fetch(url, {
       headers: {
-        Referer: 'https://gleaming-jelly-a83f4c.netlify.app',
+        'Referer': 'https://gleaming-jelly-a83f4c.netlify.app/',
+        'User-Agent': 'Mozilla/5.0',
       },
     })
     const data = await response.json()
