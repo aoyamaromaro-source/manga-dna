@@ -21,12 +21,7 @@ export async function GET(req: NextRequest) {
   const url = `https://openapi.rakuten.co.jp/services/api/BooksBook/Search/20170404?${params}`
 
   try {
-    const response = await fetch(url, {
-      headers: {
-        'Referer': 'https://gleaming-jelly-a83f4c.netlify.app/',
-        'User-Agent': 'Mozilla/5.0',
-      },
-    })
+    const response = await fetch(url)
     const data = await response.json()
 
     if (!data.Items?.length) {
