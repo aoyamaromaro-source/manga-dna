@@ -1,6 +1,12 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { createClient } from '@supabase/supabase-js'
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+)
 
 // ---- Types ----
 type Status = 'reading' | 'completed' | 'dropped' | 'paused'
@@ -21,6 +27,58 @@ interface Manga {
   fetchedAt: number | null
 }
 
+// ---- Supabase helpers ----
+function toRow(m: Manga) {
+  return {
+    id: m.id,
+    user_id: 'default',
+    title: m.title,
+    current_vol: m.currentVol,
+    max_vol: m.maxVol,
+    is_series_complete: m.isSeriesComplete,
+    status: m.status,
+    is_mid_volume: m.isMidVolume,
+    star: m.star,
+    registered_at: m.registeredAt,
+    latest_vol: m.latestVol,
+    release_date: m.releaseDate,
+    is_future: m.isFuture,
+    fetched_at: m.fetchedAt,
+  }
+}
+
+function fromRow(row: any): Manga {
+  return {
+    id: row.id,
+    title: row.title,
+    currentVol: row.current_vol,
+    maxVol: row.max_vol,
+    isSeriesComplete: row.is_series_complete,
+    status: row.status,
+    isMidVolume: row.is_mid_volume,
+    star: row.star,
+    registeredAt: row.registered_at,
+    latestVol: row.latest_vol,
+    releaseDate: row.release_date || '',
+    isFuture: row.is_future,
+    fetchedAt: row.fetched_at,
+  }
+}
+
+async function loadFromSupabase(): Promise<Manga[]> {
+  const { data, error } = await supabase
+    .from('mangas')
+    .select('*')
+    .eq('user_id', 'default')
+    .order('registered_at', { ascending: false })
+  if (error || !data) return []
+  return data.map(fromRow)
+}
+
+async function upsertToSupabase(manga: Manga) {
+  await supabase.from('mangas').upsert(toRow(manga))
+}
+
 // ---- Parser ----
 function parseMemoLine(line: string): Partial<Manga> | null {
   line = line.trim()
@@ -39,11 +97,8 @@ function parseMemoLine(line: string): Partial<Manga> | null {
   const isMidVolume = /途中/.test(line)
   line = line.replace(/途中/g, '').trim()
 
-  // Extract volume number
   let currentVol: number | null = null
-  let maxVol: number | null = null
 
-  // Pattern: "16巻 116話まで" or "174話"
   const volTalkMatch = line.match(/(\d+)\s*巻\s*(\d+)\s*話/)
   if (volTalkMatch) {
     currentVol = parseInt(volTalkMatch[1])
@@ -55,7 +110,6 @@ function parseMemoLine(line: string): Partial<Manga> | null {
     }
   }
 
-  // Pattern: number at end
   if (currentVol === null) {
     const volMatch = line.match(/(\d+)\s*$/)
     if (volMatch) {
@@ -64,20 +118,18 @@ function parseMemoLine(line: string): Partial<Manga> | null {
     }
   }
 
-  // Handle date patterns like "7/23発売"
   line = line.replace(/\d+\/\d+発売/, '').trim()
 
   const title = line.trim()
   if (!title) return null
 
   let status: Status = 'reading'
-  if (isSeriesComplete && currentVol !== null) status = 'completed'
-  else if (isSeriesComplete) status = 'completed'
+  if (isSeriesComplete) status = 'completed'
 
   return {
     title,
     currentVol,
-    maxVol,
+    maxVol: null,
     isSeriesComplete,
     status,
     isMidVolume,
@@ -112,27 +164,11 @@ async function fetchLatestVol(title: string): Promise<{
   return { latestVol: null, releaseDate: '', isFuture: false }
 }
 
-// ---- Storage ----
-const STORAGE_KEY = 'mangadna_v1'
-
-function loadMangas(): Manga[] {
-  if (typeof window === 'undefined') return []
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    return raw ? JSON.parse(raw) : []
-  } catch {
-    return []
-  }
-}
-
-function saveMangas(mangas: Manga[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(mangas))
-}
-
 // ---- Main App ----
 export default function Home() {
   const [tab, setTab] = useState<'home' | 'shelf' | 'register'>('home')
   const [mangas, setMangas] = useState<Manga[]>([])
+  const [loading, setLoading] = useState(true)
   const [memo, setMemo] = useState('')
   const [parsed, setParsed] = useState<Partial<Manga>[]>([])
   const [registering, setRegistering] = useState(false)
@@ -143,13 +179,11 @@ export default function Home() {
   const [fetchingIds, setFetchingIds] = useState<Set<string>>(new Set())
 
   useEffect(() => {
-    setMangas(loadMangas())
+    loadFromSupabase().then(data => {
+      setMangas(data)
+      setLoading(false)
+    })
   }, [])
-
-  const updateMangas = (next: Manga[]) => {
-    setMangas(next)
-    saveMangas(next)
-  }
 
   const handleParse = () => {
     const result = parseMemo(memo)
@@ -161,10 +195,13 @@ export default function Home() {
     setRegistering(true)
     setRegisterProgress(0)
 
+    const existing = await loadFromSupabase()
     const newMangas: Manga[] = []
+
     for (let i = 0; i < parsed.length; i++) {
       const p = parsed[i]
-      const id = `${Date.now()}_${i}`
+      const existingManga = existing.find(m => m.title === p.title)
+      const id = existingManga?.id || `${Date.now()}_${i}`
       const manga: Manga = {
         id,
         title: p.title || '',
@@ -174,41 +211,32 @@ export default function Home() {
         status: p.status || 'reading',
         isMidVolume: p.isMidVolume || false,
         star: p.star || false,
-        registeredAt: Date.now(),
-        latestVol: null,
-        releaseDate: '',
-        isFuture: false,
-        fetchedAt: null,
+        registeredAt: existingManga?.registeredAt || Date.now(),
+        // 取得済みの最新刊情報は引き継ぐ
+        latestVol: existingManga?.latestVol ?? null,
+        releaseDate: existingManga?.releaseDate ?? '',
+        isFuture: existingManga?.isFuture ?? false,
+        fetchedAt: existingManga?.fetchedAt ?? null,
       }
       newMangas.push(manga)
+      await upsertToSupabase(manga)
       setRegisterProgress(Math.round(((i + 1) / parsed.length) * 50))
     }
 
-    const merged = [...loadMangas()]
-    for (const nm of newMangas) {
-      const exists = merged.findIndex(m => m.title === nm.title)
-      if (exists >= 0) merged[exists] = { ...merged[exists], ...nm, id: merged[exists].id }
-      else merged.push(nm)
-    }
-    updateMangas(merged)
-
-    // Fetch latest vol info
-    for (let i = 0; i < newMangas.length; i++) {
-      const nm = newMangas[i]
+    // 未取得の作品だけAPIを叩く（300回節約）
+    const needFetch = newMangas.filter(m => !m.fetchedAt)
+    for (let i = 0; i < needFetch.length; i++) {
+      const nm = needFetch[i]
       const info = await fetchLatestVol(nm.title)
-      setMangas(prev => {
-        const next = prev.map(m =>
-          m.title === nm.title
-            ? { ...m, ...info, fetchedAt: Date.now() }
-            : m
-        )
-        saveMangas(next)
-        return next
-      })
-      setRegisterProgress(50 + Math.round(((i + 1) / newMangas.length) * 50))
-      await new Promise(r => setTimeout(r, 300))
+      const updated = { ...nm, ...info, fetchedAt: Date.now() }
+      await upsertToSupabase(updated)
+      setMangas(prev => prev.map(m => m.id === nm.id ? updated : m))
+      setRegisterProgress(50 + Math.round(((i + 1) / needFetch.length) * 50))
+      await new Promise(r => setTimeout(r, 400))
     }
 
+    const latest = await loadFromSupabase()
+    setMangas(latest)
     setRegistering(false)
     setParsed([])
     setMemo('')
@@ -220,11 +248,9 @@ export default function Home() {
     if (!manga) return
     setFetchingIds(prev => new Set(prev).add(id))
     const info = await fetchLatestVol(manga.title)
-    setMangas(prev => {
-      const next = prev.map(m => m.id === id ? { ...m, ...info, fetchedAt: Date.now() } : m)
-      saveMangas(next)
-      return next
-    })
+    const updated = { ...manga, ...info, fetchedAt: Date.now() }
+    await upsertToSupabase(updated)
+    setMangas(prev => prev.map(m => m.id === id ? updated : m))
     setFetchingIds(prev => { const s = new Set(prev); s.delete(id); return s })
   }, [mangas])
 
@@ -232,14 +258,11 @@ export default function Home() {
   const totalWorks = mangas.length
   const totalVols = mangas.reduce((s, m) => s + (m.currentVol || 0), 0)
   const unreadMangas = mangas.filter(m => m.latestVol && m.currentVol && m.latestVol > m.currentVol)
-  const upcomingMangas = mangas.filter(m => m.isFuture)
 
   // Filtered shelf
   const filteredMangas = mangas
     .filter(m => {
-      if (searchQuery) {
-        return m.title.toLowerCase().includes(searchQuery.toLowerCase())
-      }
+      if (searchQuery) return m.title.toLowerCase().includes(searchQuery.toLowerCase())
       return true
     })
     .filter(m => {
@@ -257,10 +280,22 @@ export default function Home() {
       return b.registeredAt - a.registeredAt
     })
 
-  const genreKeywords: Record<string, string[]> = {
-    'スポーツ': ['サッカー', 'バスケ', '野球', '陸上', 'スポーツ', 'キリング', 'ブルーロック', 'アオアシ', 'mix', 'カペタ', 'クロッカーズ'],
-    'SF・冒険': ['宇宙', 'キングダム', 'ハンター', 'ストーン'],
-    '日常・青春': ['3月', 'うさぎ', '銀の匙', 'チャンネル'],
+  if (loading) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: '#f5f2ee',
+        fontFamily: "'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif",
+      }}>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: 32, marginBottom: 12 }}>📚</div>
+          <div style={{ color: '#999', fontSize: 14 }}>読み込み中...</div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -379,34 +414,30 @@ export default function Home() {
                         {m.title.slice(0, 4)}
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 700, fontSize: 15 }}>{m.title}
-                          {m.isFuture && <span style={{
-                            marginLeft: 8,
-                            fontSize: 11,
-                            background: '#fff3e0',
-                            color: '#e05c2a',
-                            borderRadius: 4,
-                            padding: '2px 6px',
-                          }}>{m.releaseDate?.replace('年', '/').replace('月', '/').replace('日', '')}</span>}
-                          {!m.isFuture && <span style={{
-                            marginLeft: 8,
-                            fontSize: 11,
-                            background: '#e05c2a',
-                            color: '#fff',
-                            borderRadius: 4,
-                            padding: '2px 6px',
-                          }}>NEW</span>}
+                        <div style={{ fontWeight: 700, fontSize: 15 }}>
+                          {m.title}
+                          {m.isFuture && (
+                            <span style={{
+                              marginLeft: 8, fontSize: 11,
+                              background: '#fff3e0', color: '#e05c2a',
+                              borderRadius: 4, padding: '2px 6px',
+                            }}>
+                              {m.releaseDate?.replace('年', '/').replace('月', '/').replace('日', '')}
+                            </span>
+                          )}
+                          {!m.isFuture && (
+                            <span style={{
+                              marginLeft: 8, fontSize: 11,
+                              background: '#e05c2a', color: '#fff',
+                              borderRadius: 4, padding: '2px 6px',
+                            }}>NEW</span>
+                          )}
                         </div>
                         <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
                           あなた：{m.currentVol}巻 → 最新：{m.latestVol}巻
                         </div>
                       </div>
-                      <div style={{
-                        fontSize: 16,
-                        fontWeight: 900,
-                        color: '#e05c2a',
-                        flexShrink: 0,
-                      }}>
+                      <div style={{ fontSize: 16, fontWeight: 900, color: '#e05c2a', flexShrink: 0 }}>
                         {m.isFuture ? '予告' : `+${(m.latestVol || 0) - (m.currentVol || 0)}巻`}
                       </div>
                     </div>
@@ -418,11 +449,8 @@ export default function Home() {
             {/* Empty state */}
             {mangas.length === 0 && (
               <div style={{
-                background: '#fff',
-                borderRadius: 16,
-                padding: 40,
-                textAlign: 'center',
-                boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+                background: '#fff', borderRadius: 16, padding: 40,
+                textAlign: 'center', boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
               }}>
                 <div style={{ fontSize: 48, marginBottom: 12 }}>📚</div>
                 <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 8 }}>まだ登録がありません</div>
@@ -432,36 +460,24 @@ export default function Home() {
                 <button
                   onClick={() => setTab('register')}
                   style={{
-                    background: '#1a1a1a',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: 24,
-                    padding: '12px 28px',
-                    fontSize: 14,
-                    fontWeight: 700,
-                    cursor: 'pointer',
+                    background: '#1a1a1a', color: '#fff', border: 'none',
+                    borderRadius: 24, padding: '12px 28px', fontSize: 14,
+                    fontWeight: 700, cursor: 'pointer',
                   }}
-                >
-                  登録する
-                </button>
+                >登録する</button>
               </div>
             )}
 
             {/* Manga personality card */}
             {mangas.length >= 5 && (
               <div style={{
-                background: '#1a1a1a',
-                borderRadius: 16,
-                padding: 24,
-                position: 'relative',
-                overflow: 'hidden',
+                background: '#1a1a1a', borderRadius: 16, padding: 24,
+                position: 'relative', overflow: 'hidden',
               }}>
                 <div style={{
                   position: 'absolute', right: -20, top: -20,
-                  width: 120, height: 120,
-                  borderRadius: '50%',
-                  background: '#4a1a0a',
-                  opacity: 0.6,
+                  width: 120, height: 120, borderRadius: '50%',
+                  background: '#4a1a0a', opacity: 0.6,
                 }} />
                 <div style={{ fontSize: 11, color: '#999', marginBottom: 8 }}>あなたの漫画人格</div>
                 <div style={{ fontSize: 26, fontWeight: 900, color: '#fff', marginBottom: 8 }}>
@@ -473,11 +489,8 @@ export default function Home() {
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                   {getMangaPersonality(mangas).tags.map(tag => (
                     <span key={tag} style={{
-                      background: '#333',
-                      color: '#ccc',
-                      fontSize: 12,
-                      padding: '4px 10px',
-                      borderRadius: 20,
+                      background: '#333', color: '#ccc',
+                      fontSize: 12, padding: '4px 10px', borderRadius: 20,
                     }}>{tag}</span>
                   ))}
                 </div>
@@ -489,21 +502,15 @@ export default function Home() {
         {/* ===== SHELF TAB ===== */}
         {tab === 'shelf' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {/* Search & filters */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <input
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
                 placeholder="タイトルで検索..."
                 style={{
-                  width: '100%',
-                  padding: '12px 16px',
-                  borderRadius: 24,
-                  border: '1px solid #e8e4df',
-                  background: '#fff',
-                  fontSize: 14,
-                  outline: 'none',
-                  boxSizing: 'border-box',
+                  width: '100%', padding: '12px 16px', borderRadius: 24,
+                  border: '1px solid #e8e4df', background: '#fff',
+                  fontSize: 14, outline: 'none', boxSizing: 'border-box',
                 }}
               />
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -512,14 +519,11 @@ export default function Home() {
                     key={f}
                     onClick={() => setFilterStatus(f)}
                     style={{
-                      padding: '6px 14px',
-                      borderRadius: 20,
-                      border: '1px solid',
+                      padding: '6px 14px', borderRadius: 20, border: '1px solid',
                       borderColor: filterStatus === f ? '#1a1a1a' : '#e8e4df',
                       background: filterStatus === f ? '#1a1a1a' : '#fff',
                       color: filterStatus === f ? '#fff' : '#666',
-                      fontSize: 12,
-                      cursor: 'pointer',
+                      fontSize: 12, cursor: 'pointer',
                     }}
                   >
                     {f === 'all' ? 'すべて' : f === 'unread' ? '未読あり' : '★お気に入り'}
@@ -529,15 +533,10 @@ export default function Home() {
                   value={sortBy}
                   onChange={e => setSortBy(e.target.value as typeof sortBy)}
                   style={{
-                    padding: '6px 12px',
-                    borderRadius: 20,
-                    border: '1px solid #e8e4df',
-                    background: '#fff',
-                    fontSize: 12,
-                    color: '#666',
-                    cursor: 'pointer',
-                    outline: 'none',
-                    marginLeft: 'auto',
+                    padding: '6px 12px', borderRadius: 20,
+                    border: '1px solid #e8e4df', background: '#fff',
+                    fontSize: 12, color: '#666', cursor: 'pointer',
+                    outline: 'none', marginLeft: 'auto',
                   }}
                 >
                   <option value="registered">登録順</option>
@@ -549,35 +548,21 @@ export default function Home() {
 
             <div style={{ fontSize: 12, color: '#999' }}>{filteredMangas.length}作品</div>
 
-            {/* Manga list */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {filteredMangas.map(m => {
-                const unreadCount = m.latestVol && m.currentVol ? m.latestVol - m.currentVol : 0
                 const isFetching = fetchingIds.has(m.id)
                 return (
                   <div key={m.id} style={{
-                    background: '#fff',
-                    borderRadius: 12,
-                    padding: '12px 14px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 12,
+                    background: '#fff', borderRadius: 12, padding: '12px 14px',
+                    display: 'flex', alignItems: 'center', gap: 12,
                     boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
                   }}>
                     <div style={{
-                      width: 44,
-                      height: 44,
-                      borderRadius: 8,
+                      width: 44, height: 44, borderRadius: 8,
                       background: stringToColor(m.title),
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: 10,
-                      color: '#fff',
-                      fontWeight: 700,
-                      textAlign: 'center',
-                      lineHeight: 1.3,
-                      flexShrink: 0,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 10, color: '#fff', fontWeight: 700,
+                      textAlign: 'center', lineHeight: 1.3, flexShrink: 0,
                     }}>
                       {m.title.slice(0, 4)}
                     </div>
@@ -603,17 +588,11 @@ export default function Home() {
                       onClick={() => refreshOne(m.id)}
                       disabled={isFetching}
                       style={{
-                        width: 32,
-                        height: 32,
-                        borderRadius: '50%',
-                        border: '1px solid #e8e4df',
-                        background: '#fff',
+                        width: 32, height: 32, borderRadius: '50%',
+                        border: '1px solid #e8e4df', background: '#fff',
                         cursor: isFetching ? 'default' : 'pointer',
-                        fontSize: 14,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        flexShrink: 0,
+                        fontSize: 14, display: 'flex', alignItems: 'center',
+                        justifyContent: 'center', flexShrink: 0,
                         opacity: isFetching ? 0.5 : 1,
                       }}
                     >
@@ -636,9 +615,7 @@ export default function Home() {
         {tab === 'register' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             <div style={{
-              background: '#fff',
-              borderRadius: 16,
-              padding: 20,
+              background: '#fff', borderRadius: 16, padding: 20,
               boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
             }}>
               <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>メモから一括登録</div>
@@ -651,15 +628,9 @@ export default function Home() {
                 placeholder={`例：\n・キングダム 76★\n・ブルーロック 38\n・宇宙兄弟 45★\n・ワンピース 110 完`}
                 rows={10}
                 style={{
-                  width: '100%',
-                  padding: '12px 14px',
-                  borderRadius: 10,
-                  border: '1px solid #e8e4df',
-                  fontSize: 14,
-                  lineHeight: 1.7,
-                  resize: 'vertical',
-                  outline: 'none',
-                  boxSizing: 'border-box',
+                  width: '100%', padding: '12px 14px', borderRadius: 10,
+                  border: '1px solid #e8e4df', fontSize: 14, lineHeight: 1.7,
+                  resize: 'vertical', outline: 'none', boxSizing: 'border-box',
                   fontFamily: 'monospace',
                 }}
               />
@@ -667,28 +638,17 @@ export default function Home() {
                 onClick={handleParse}
                 disabled={!memo.trim()}
                 style={{
-                  marginTop: 12,
-                  width: '100%',
-                  padding: '12px',
-                  borderRadius: 24,
-                  border: 'none',
-                  background: memo.trim() ? '#1a1a1a' : '#e0e0e0',
-                  color: memo.trim() ? '#fff' : '#999',
-                  fontSize: 14,
-                  fontWeight: 700,
-                  cursor: memo.trim() ? 'pointer' : 'default',
+                  marginTop: 12, width: '100%', padding: '12px', borderRadius: 24,
+                  border: 'none', background: memo.trim() ? '#1a1a1a' : '#e0e0e0',
+                  color: memo.trim() ? '#fff' : '#999', fontSize: 14,
+                  fontWeight: 700, cursor: memo.trim() ? 'pointer' : 'default',
                 }}
-              >
-                解析する
-              </button>
+              >解析する</button>
             </div>
 
-            {/* Parsed preview */}
             {parsed.length > 0 && (
               <div style={{
-                background: '#fff',
-                borderRadius: 16,
-                padding: 20,
+                background: '#fff', borderRadius: 16, padding: 20,
                 boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
               }}>
                 <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>
@@ -697,12 +657,8 @@ export default function Home() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
                   {parsed.slice(0, 20).map((p, i) => (
                     <div key={i} style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 10,
-                      padding: '8px 12px',
-                      background: '#f9f7f5',
-                      borderRadius: 8,
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '8px 12px', background: '#f9f7f5', borderRadius: 8,
                     }}>
                       <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>
                         {p.star && '★ '}{p.title}
@@ -723,41 +679,27 @@ export default function Home() {
                 {registering ? (
                   <div>
                     <div style={{
-                      height: 6,
-                      background: '#f0f0f0',
-                      borderRadius: 3,
-                      overflow: 'hidden',
-                      marginBottom: 8,
+                      height: 6, background: '#f0f0f0', borderRadius: 3,
+                      overflow: 'hidden', marginBottom: 8,
                     }}>
                       <div style={{
-                        height: '100%',
-                        width: `${registerProgress}%`,
-                        background: '#e05c2a',
-                        borderRadius: 3,
-                        transition: 'width 0.3s',
+                        height: '100%', width: `${registerProgress}%`,
+                        background: '#e05c2a', borderRadius: 3, transition: 'width 0.3s',
                       }} />
                     </div>
                     <div style={{ fontSize: 13, color: '#999', textAlign: 'center' }}>
-                      {registerProgress < 50 ? '登録中...' : '最新刊情報を取得中...'}  {registerProgress}%
+                      {registerProgress < 50 ? '登録中...' : '最新刊情報を取得中...'} {registerProgress}%
                     </div>
                   </div>
                 ) : (
                   <button
                     onClick={handleRegister}
                     style={{
-                      width: '100%',
-                      padding: '14px',
-                      borderRadius: 24,
-                      border: 'none',
-                      background: '#e05c2a',
-                      color: '#fff',
-                      fontSize: 15,
-                      fontWeight: 700,
-                      cursor: 'pointer',
+                      width: '100%', padding: '14px', borderRadius: 24, border: 'none',
+                      background: '#e05c2a', color: '#fff', fontSize: 15,
+                      fontWeight: 700, cursor: 'pointer',
                     }}
-                  >
-                    本棚に登録して最新刊を取得する
-                  </button>
+                  >本棚に登録して最新刊を取得する</button>
                 )}
               </div>
             )}
