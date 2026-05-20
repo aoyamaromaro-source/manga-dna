@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
     applicationId: APP_ID,
     accessKey: ACCESS_KEY,
     title: title,
-    hits: '5',
+    hits: '10',
     format: 'json',
     booksGenreId: '001001',
   })
@@ -36,7 +36,18 @@ export async function GET(req: NextRequest) {
 
     let latestVol = 0
     let releaseDate = ''
+    let coverUrl = ''
 
+    // 1巻の表紙を探す
+    for (const { Item } of data.Items) {
+      const volMatch = Item.title?.match(/(\d+)/)
+      if (volMatch && parseInt(volMatch[1]) === 1) {
+        coverUrl = Item.largeImageUrl || Item.mediumImageUrl || ''
+        break
+      }
+    }
+
+    // 最新巻を探す
     for (const { Item } of data.Items) {
       const volMatch = Item.title?.match(/(\d+)/)
       if (volMatch) {
@@ -44,6 +55,7 @@ export async function GET(req: NextRequest) {
         if (v > latestVol) {
           latestVol = v
           releaseDate = Item.salesDate || ''
+          if (!coverUrl) coverUrl = Item.largeImageUrl || Item.mediumImageUrl || ''
         }
       }
     }
@@ -59,6 +71,7 @@ export async function GET(req: NextRequest) {
       latestVol: latestVol || null,
       releaseDate,
       isFuture,
+      coverUrl,
     })
   } catch (e) {
     return NextResponse.json({ error: 'API error', detail: String(e) }, { status: 500 })
