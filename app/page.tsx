@@ -8,6 +8,7 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
 
+// ---- Types ----
 type Status = 'reading' | 'completed' | 'dropped' | 'wishlist'
 
 interface Manga {
@@ -19,7 +20,7 @@ interface Manga {
   status: Status
   isMidVolume: boolean
   star: boolean
-  rating: number // 1-5
+  rating: number
   registeredAt: number
   latestVol: number | null
   releaseDate: string
@@ -28,10 +29,16 @@ interface Manga {
   coverUrl: string
 }
 
-function toRow(m: Manga) {
+interface UserProfile {
+  id: string
+  email: string | undefined
+}
+
+// ---- Supabase helpers ----
+function toRow(m: Manga, userId: string) {
   return {
     id: m.id,
-    user_id: 'default',
+    user_id: userId,
     title: m.title,
     current_vol: m.currentVol,
     max_vol: m.maxVol,
@@ -69,18 +76,18 @@ function fromRow(row: any): Manga {
   }
 }
 
-async function loadFromSupabase(): Promise<Manga[]> {
+async function loadFromSupabase(userId: string): Promise<Manga[]> {
   const { data, error } = await supabase
     .from('mangas')
     .select('*')
-    .eq('user_id', 'default')
+    .eq('user_id', userId)
     .order('registered_at', { ascending: false })
   if (error || !data) return []
   return data.map(fromRow)
 }
 
-async function upsertToSupabase(manga: Manga) {
-  await supabase.from('mangas').upsert(toRow(manga))
+async function upsertToSupabase(manga: Manga, userId: string) {
+  await supabase.from('mangas').upsert(toRow(manga, userId))
 }
 
 // ---- Parser ----
@@ -183,7 +190,7 @@ function getMangaPersonality(mangas: Manga[]): { title: string; desc: string; ta
   }
 }
 
-// ---- MangaCover component ----
+// ---- MangaCover ----
 function MangaCover({ manga, size = 44 }: { manga: Manga; size?: number }) {
   const [imgError, setImgError] = useState(false)
   if (manga.coverUrl && !imgError) {
@@ -209,7 +216,7 @@ function MangaCover({ manga, size = 44 }: { manga: Manga; size?: number }) {
   )
 }
 
-// ---- StarRating component ----
+// ---- StarRating ----
 function StarRating({ rating, onChange }: { rating: number; onChange?: (r: number) => void }) {
   return (
     <div style={{ display: 'flex', gap: 2 }}>
@@ -229,8 +236,287 @@ function StarRating({ rating, onChange }: { rating: number; onChange?: (r: numbe
   )
 }
 
+// ---- AuthScreen ----
+type AuthMode = 'login' | 'signup' | 'forgot'
+
+function AuthScreen({ onAuth }: { onAuth: (user: UserProfile) => void }) {
+  const [mode, setMode] = useState<AuthMode>('login')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError('')
+    setMessage('')
+    setLoading(true)
+
+    try {
+      if (mode === 'forgot') {
+        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: `${window.location.origin}/`,
+        })
+        if (error) throw error
+        setMessage('パスワードリセットメールを送信しました。メールをご確認ください。')
+        setLoading(false)
+        return
+      }
+
+      if (mode === 'signup') {
+        const { data, error } = await supabase.auth.signUp({ email, password })
+        if (error) throw error
+        if (data.user && !data.session) {
+          // メール確認が必要な場合
+          setMessage('確認メールを送信しました。メールをクリックしてアカウントを有効化してください。')
+          setLoading(false)
+          return
+        }
+        if (data.user) {
+          onAuth({ id: data.user.id, email: data.user.email })
+        }
+      } else {
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+        if (error) throw error
+        if (data.user) {
+          onAuth({ id: data.user.id, email: data.user.email })
+        }
+      }
+    } catch (err: any) {
+      const msg = err.message || 'エラーが発生しました'
+      if (msg.includes('Invalid login credentials')) setError('メールアドレスまたはパスワードが正しくありません')
+      else if (msg.includes('Email not confirmed')) setError('メールアドレスが未確認です。確認メールをご確認ください。')
+      else if (msg.includes('User already registered')) setError('このメールアドレスは既に登録されています')
+      else if (msg.includes('Password should be at least')) setError('パスワードは6文字以上にしてください')
+      else setError(msg)
+    }
+    setLoading(false)
+  }
+
+  const handleGoogle = async () => {
+    setError('')
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.origin },
+    })
+    if (error) setError(error.message)
+  }
+
+  return (
+    <div style={{
+      minHeight: '100vh',
+      background: '#f5f2ee',
+      fontFamily: "'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif",
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '20px 16px',
+    }}>
+      {/* Logo */}
+      <div style={{ marginBottom: 32, textAlign: 'center' }}>
+        <div style={{ fontWeight: 900, fontSize: 32, letterSpacing: '-1px', marginBottom: 8 }}>
+          <span style={{ color: '#1a1a1a' }}>MANGA</span>
+          <span style={{ color: '#e05c2a' }}>DNA</span>
+        </div>
+        <div style={{ fontSize: 13, color: '#999' }}>あなたの漫画遺伝子を記録する</div>
+      </div>
+
+      {/* Card */}
+      <div style={{
+        width: '100%',
+        maxWidth: 400,
+        background: '#fff',
+        borderRadius: 20,
+        padding: 28,
+        boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
+      }}>
+        {/* Tab switcher (login / signup only) */}
+        {mode !== 'forgot' && (
+          <div style={{ display: 'flex', background: '#f5f2ee', borderRadius: 12, padding: 4, marginBottom: 24 }}>
+            {(['login', 'signup'] as const).map(m => (
+              <button
+                key={m}
+                onClick={() => { setMode(m); setError(''); setMessage('') }}
+                style={{
+                  flex: 1,
+                  padding: '8px',
+                  borderRadius: 9,
+                  border: 'none',
+                  background: mode === m ? '#1a1a1a' : 'transparent',
+                  color: mode === m ? '#fff' : '#666',
+                  fontWeight: 700,
+                  fontSize: 14,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                }}
+              >
+                {m === 'login' ? 'ログイン' : '新規登録'}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {mode === 'forgot' && (
+          <div style={{ marginBottom: 20 }}>
+            <button
+              onClick={() => { setMode('login'); setError(''); setMessage('') }}
+              style={{ background: 'none', border: 'none', color: '#999', fontSize: 13, cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', gap: 4 }}
+            >
+              ← ログインに戻る
+            </button>
+            <div style={{ fontWeight: 700, fontSize: 18, marginTop: 12 }}>パスワードをお忘れの方</div>
+            <div style={{ fontSize: 13, color: '#999', marginTop: 4 }}>登録したメールアドレスにリセットリンクを送信します</div>
+          </div>
+        )}
+
+        {/* Google login */}
+        {mode !== 'forgot' && (
+          <>
+            <button
+              onClick={handleGoogle}
+              style={{
+                width: '100%',
+                padding: '12px',
+                borderRadius: 12,
+                border: '1px solid #e8e4df',
+                background: '#fff',
+                fontSize: 14,
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 10,
+                color: '#1a1a1a',
+                marginBottom: 16,
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 18 18">
+                <path fill="#4285F4" d="M16.51 8H8.98v3h4.3c-.18 1-.74 1.48-1.6 2.04v2.01h2.6a7.8 7.8 0 0 0 2.38-5.88c0-.57-.05-.66-.15-1.18z"/>
+                <path fill="#34A853" d="M8.98 17c2.16 0 3.97-.72 5.3-1.94l-2.6-2a4.8 4.8 0 0 1-7.18-2.54H1.83v2.07A8 8 0 0 0 8.98 17z"/>
+                <path fill="#FBBC05" d="M4.5 10.52a4.8 4.8 0 0 1 0-3.04V5.41H1.83a8 8 0 0 0 0 7.18l2.67-2.07z"/>
+                <path fill="#EA4335" d="M8.98 4.18c1.17 0 2.23.4 3.06 1.2l2.3-2.3A8 8 0 0 0 1.83 5.4L4.5 7.49a4.77 4.77 0 0 1 4.48-3.3z"/>
+              </svg>
+              Googleでログイン
+            </button>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+              <div style={{ flex: 1, height: 1, background: '#e8e4df' }} />
+              <span style={{ fontSize: 12, color: '#bbb' }}>または</span>
+              <div style={{ flex: 1, height: 1, background: '#e8e4df' }} />
+            </div>
+          </>
+        )}
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 12, color: '#666', marginBottom: 6, fontWeight: 600 }}>メールアドレス</div>
+            <input
+              type="email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              placeholder="example@email.com"
+              required
+              style={{
+                width: '100%',
+                padding: '12px 14px',
+                borderRadius: 10,
+                border: '1px solid #e8e4df',
+                fontSize: 14,
+                outline: 'none',
+                boxSizing: 'border-box',
+                transition: 'border-color 0.2s',
+              }}
+              onFocus={e => e.target.style.borderColor = '#1a1a1a'}
+              onBlur={e => e.target.style.borderColor = '#e8e4df'}
+            />
+          </div>
+
+          {mode !== 'forgot' && (
+            <div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 6, fontWeight: 600 }}>パスワード</div>
+              <input
+                type="password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder={mode === 'signup' ? '6文字以上' : 'パスワード'}
+                required
+                minLength={6}
+                style={{
+                  width: '100%',
+                  padding: '12px 14px',
+                  borderRadius: 10,
+                  border: '1px solid #e8e4df',
+                  fontSize: 14,
+                  outline: 'none',
+                  boxSizing: 'border-box',
+                }}
+                onFocus={e => e.target.style.borderColor = '#1a1a1a'}
+                onBlur={e => e.target.style.borderColor = '#e8e4df'}
+              />
+            </div>
+          )}
+
+          {error && (
+            <div style={{ background: '#fff3f0', border: '1px solid #ffd5cc', borderRadius: 8, padding: '10px 12px', fontSize: 13, color: '#c0392b' }}>
+              {error}
+            </div>
+          )}
+
+          {message && (
+            <div style={{ background: '#f0fff4', border: '1px solid #c3e6cb', borderRadius: 8, padding: '10px 12px', fontSize: 13, color: '#2d7a4a' }}>
+              {message}
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            style={{
+              width: '100%',
+              padding: '13px',
+              borderRadius: 24,
+              border: 'none',
+              background: loading ? '#ccc' : '#1a1a1a',
+              color: '#fff',
+              fontSize: 15,
+              fontWeight: 700,
+              cursor: loading ? 'default' : 'pointer',
+              marginTop: 4,
+              transition: 'background 0.2s',
+            }}
+          >
+            {loading ? '処理中...' : mode === 'login' ? 'ログイン' : mode === 'signup' ? 'アカウントを作成' : 'リセットメールを送信'}
+          </button>
+        </form>
+
+        {mode === 'login' && (
+          <div style={{ textAlign: 'center', marginTop: 16 }}>
+            <button
+              onClick={() => { setMode('forgot'); setError(''); setMessage('') }}
+              style={{ background: 'none', border: 'none', color: '#999', fontSize: 13, cursor: 'pointer', textDecoration: 'underline' }}
+            >
+              パスワードを忘れた方はこちら
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 24, fontSize: 12, color: '#bbb', textAlign: 'center', lineHeight: 1.8 }}>
+        アカウントを作成することで、利用規約および<br />プライバシーポリシーに同意したものとみなされます
+      </div>
+    </div>
+  )
+}
+
 // ---- Main App ----
 export default function Home() {
+  const [user, setUser] = useState<UserProfile | null>(null)
+  const [authLoading, setAuthLoading] = useState(true)
+
   const [tab, setTab] = useState<'home' | 'shelf' | 'register' | 'recommend'>('home')
   const [mangas, setMangas] = useState<Manga[]>([])
   const [loading, setLoading] = useState(true)
@@ -243,23 +529,77 @@ export default function Home() {
   const [sortBy, setSortBy] = useState<'registered' | 'title' | 'unread' | 'rating'>('registered')
   const [fetchingIds, setFetchingIds] = useState<Set<string>>(new Set())
 
-  // Single book registration
   const [singleTitle, setSingleTitle] = useState('')
   const [singleVol, setSingleVol] = useState(1)
   const [singleMode, setSingleMode] = useState(false)
   const [singleRegistering, setSingleRegistering] = useState(false)
 
+  // ---- Auth state ----
   useEffect(() => {
-    loadFromSupabase().then(data => { setMangas(data); setLoading(false) })
+    // セッション確認
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        setUser({ id: session.user.id, email: session.user.email })
+      }
+      setAuthLoading(false)
+    })
+
+    // 認証状態の変化を監視
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        setUser({ id: session.user.id, email: session.user.email })
+      } else {
+        setUser(null)
+        setMangas([])
+      }
+    })
+
+    return () => subscription.unsubscribe()
   }, [])
 
+  // ---- ユーザーが確定したらデータ読み込み ----
+  useEffect(() => {
+    if (!user) return
+    setLoading(true)
+    loadFromSupabase(user.id).then(data => {
+      setMangas(data)
+      setLoading(false)
+    })
+  }, [user])
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut()
+    setUser(null)
+    setMangas([])
+  }
+
+  // ---- Auth loading ----
+  if (authLoading) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f2ee' }}>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontWeight: 900, fontSize: 28, letterSpacing: '-0.5px', marginBottom: 16 }}>
+            <span style={{ color: '#1a1a1a' }}>MANGA</span><span style={{ color: '#e05c2a' }}>DNA</span>
+          </div>
+          <div style={{ color: '#999', fontSize: 14 }}>読み込み中...</div>
+        </div>
+      </div>
+    )
+  }
+
+  // ---- Not authenticated ----
+  if (!user) {
+    return <AuthScreen onAuth={setUser} />
+  }
+
+  // ---- Manga data loading ----
   const handleParse = () => setParsed(parseMemo(memo))
 
   const handleRegister = async () => {
-    if (parsed.length === 0) return
+    if (parsed.length === 0 || !user) return
     setRegistering(true)
     setRegisterProgress(0)
-    const existing = await loadFromSupabase()
+    const existing = await loadFromSupabase(user.id)
     const newMangas: Manga[] = []
     for (let i = 0; i < parsed.length; i++) {
       const p = parsed[i]
@@ -281,7 +621,7 @@ export default function Home() {
         coverUrl: existingManga?.coverUrl ?? '',
       }
       newMangas.push(manga)
-      await upsertToSupabase(manga)
+      await upsertToSupabase(manga, user.id)
       setRegisterProgress(Math.round(((i + 1) / parsed.length) * 50))
     }
     const needFetch = newMangas.filter(m => !m.fetchedAt)
@@ -289,12 +629,12 @@ export default function Home() {
       const nm = needFetch[i]
       const info = await fetchLatestVol(nm.title)
       const updated = { ...nm, ...info, fetchedAt: Date.now() }
-      await upsertToSupabase(updated)
+      await upsertToSupabase(updated, user.id)
       setMangas(prev => prev.map(m => m.id === nm.id ? updated : m))
       setRegisterProgress(50 + Math.round(((i + 1) / needFetch.length) * 50))
       await new Promise(r => setTimeout(r, 400))
     }
-    const latest = await loadFromSupabase()
+    const latest = await loadFromSupabase(user.id)
     setMangas(latest)
     setRegistering(false)
     setParsed([])
@@ -303,7 +643,7 @@ export default function Home() {
   }
 
   const handleSingleRegister = async () => {
-    if (!singleTitle.trim()) return
+    if (!singleTitle.trim() || !user) return
     setSingleRegistering(true)
     const existing = mangas.find(m => m.title === singleTitle.trim())
     const id = existing?.id || `${Date.now()}_single`
@@ -319,11 +659,11 @@ export default function Home() {
       fetchedAt: existing?.fetchedAt ?? null,
       coverUrl: existing?.coverUrl ?? '',
     }
-    await upsertToSupabase(manga)
+    await upsertToSupabase(manga, user.id)
     if (!manga.fetchedAt) {
       const info = await fetchLatestVol(manga.title)
       const updated = { ...manga, ...info, fetchedAt: Date.now() }
-      await upsertToSupabase(updated)
+      await upsertToSupabase(updated, user.id)
       setMangas(prev => {
         const exists = prev.find(m => m.id === updated.id)
         if (exists) return prev.map(m => m.id === updated.id ? updated : m)
@@ -344,30 +684,33 @@ export default function Home() {
   }
 
   const refreshOne = useCallback(async (id: string) => {
+    if (!user) return
     const manga = mangas.find(m => m.id === id)
     if (!manga) return
     setFetchingIds(prev => new Set(prev).add(id))
     const info = await fetchLatestVol(manga.title)
     const updated = { ...manga, ...info, fetchedAt: Date.now() }
-    await upsertToSupabase(updated)
+    await upsertToSupabase(updated, user.id)
     setMangas(prev => prev.map(m => m.id === id ? updated : m))
     setFetchingIds(prev => { const s = new Set(prev); s.delete(id); return s })
-  }, [mangas])
+  }, [mangas, user])
 
   const updateRating = async (id: string, rating: number) => {
+    if (!user) return
     const manga = mangas.find(m => m.id === id)
     if (!manga) return
     const updated = { ...manga, rating }
-    await upsertToSupabase(updated)
+    await upsertToSupabase(updated, user.id)
     setMangas(prev => prev.map(m => m.id === id ? updated : m))
   }
 
   const updateVol = async (id: string, delta: number) => {
+    if (!user) return
     const manga = mangas.find(m => m.id === id)
     if (!manga) return
     const newVol = Math.max(0, (manga.currentVol || 0) + delta)
     const updated = { ...manga, currentVol: newVol }
-    await upsertToSupabase(updated)
+    await upsertToSupabase(updated, user.id)
     setMangas(prev => prev.map(m => m.id === id ? updated : m))
   }
 
@@ -410,7 +753,7 @@ export default function Home() {
           <div style={{ fontWeight: 900, fontSize: 20, letterSpacing: '-0.5px' }}>
             <span style={{ color: '#1a1a1a' }}>MANGA</span><span style={{ color: '#e05c2a' }}>DNA</span>
           </div>
-          <nav style={{ display: 'flex', gap: 4 }}>
+          <nav style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
             {(['home', 'shelf', 'register', 'recommend'] as const).map(t => (
               <button key={t} onClick={() => setTab(t)} style={{
                 padding: '6px 10px', borderRadius: 20, border: 'none', cursor: 'pointer', fontSize: 12,
@@ -421,6 +764,27 @@ export default function Home() {
                 {t === 'home' ? 'ホーム' : t === 'shelf' ? '本棚' : t === 'register' ? '登録' : 'おすすめ'}
               </button>
             ))}
+            {/* アカウントメニュー */}
+            <button
+              onClick={handleSignOut}
+              title={`${user.email} からログアウト`}
+              style={{
+                marginLeft: 4,
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                border: '1px solid #e8e4df',
+                background: '#f5f2ee',
+                cursor: 'pointer',
+                fontSize: 14,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+            >
+              👤
+            </button>
           </nav>
         </div>
       </header>
@@ -570,7 +934,6 @@ export default function Home() {
         {/* ===== REGISTER ===== */}
         {tab === 'register' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {/* Toggle */}
             <div style={{ display: 'flex', gap: 8 }}>
               <button onClick={() => setSingleMode(false)} style={{ flex: 1, padding: '10px', borderRadius: 12, border: 'none', background: !singleMode ? '#1a1a1a' : '#f0f0f0', color: !singleMode ? '#fff' : '#666', fontWeight: 700, cursor: 'pointer', fontSize: 13 }}>一括登録</button>
               <button onClick={() => setSingleMode(true)} style={{ flex: 1, padding: '10px', borderRadius: 12, border: 'none', background: singleMode ? '#1a1a1a' : '#f0f0f0', color: singleMode ? '#fff' : '#666', fontWeight: 700, cursor: 'pointer', fontSize: 13 }}>1冊ずつ登録</button>
@@ -627,11 +990,10 @@ export default function Home() {
                   {singleRegistering ? '登録中...' : '本棚に追加する'}
                 </button>
 
-                {/* Wishlist */}
                 <div style={{ marginTop: 20, paddingTop: 20, borderTop: '1px solid #f0f0f0' }}>
                   <div style={{ fontSize: 13, color: '#666', marginBottom: 10 }}>読みたいリストに追加する場合</div>
                   <button onClick={async () => {
-                    if (!singleTitle.trim()) return
+                    if (!singleTitle.trim() || !user) return
                     const id = `${Date.now()}_wish`
                     const manga: Manga = {
                       id, title: singleTitle.trim(), currentVol: null, maxVol: null,
@@ -639,7 +1001,7 @@ export default function Home() {
                       star: false, rating: 0, registeredAt: Date.now(),
                       latestVol: null, releaseDate: '', isFuture: false, fetchedAt: null, coverUrl: '',
                     }
-                    await upsertToSupabase(manga)
+                    await upsertToSupabase(manga, user.id)
                     setMangas(prev => [manga, ...prev])
                     setSingleTitle('')
                     setTab('shelf')
