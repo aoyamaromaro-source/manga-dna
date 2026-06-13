@@ -28,6 +28,7 @@ interface Manga {
   fetchedAt: number | null
   coverUrl: string
   affiliateUrl: string
+  author: string
 }
 
 interface UserProfile {
@@ -68,6 +69,7 @@ function toRow(m: Manga, userId: string) {
     fetched_at: m.fetchedAt,
     cover_url: m.coverUrl,
     affiliate_url: m.affiliateUrl,
+    author: m.author,
   }
 }
 
@@ -89,6 +91,7 @@ function fromRow(row: any): Manga {
     fetchedAt: row.fetched_at,
     coverUrl: row.cover_url || '',
     affiliateUrl: row.affiliate_url || '',
+    author: row.author || '',
   }
 }
 
@@ -214,14 +217,7 @@ function getMangaPersonality(mangas: Manga[]): { title: string; desc: string; ta
   }
 }
 
-function getFallbackBuyUrl(title: string): string {
-  const affiliateId = process.env.NEXT_PUBLIC_RAKUTEN_AFFILIATE_ID
-  const searchUrl = `https://search.books.rakuten.co.jp/booksearch/?keyword=${encodeURIComponent(title)}`
-  if (affiliateId) {
-    return `https://hb.afl.rakuten.co.jp/hgc/${affiliateId}/0/?pc=${encodeURIComponent(searchUrl)}`
-  }
-  return searchUrl
-}
+const RAKUTEN_AFFILIATE_ID = "54dd456c.699422ca.54dd456d.4bf7e5c6"
 
 // 著者で検索してシリーズをユニーク化して返す
 async function fetchAuthorRecommends(author: string, shelfTitles: string[]): Promise<RecommendBook[]> {
@@ -251,7 +247,7 @@ async function fetchAuthorRecommends(author: string, shelfTitles: string[]): Pro
         title: baseTitle,
         author: book.author,
         coverUrl: book.coverUrl,
-        buyUrl: book.affiliateUrl || getFallbackBuyUrl(baseTitle),
+        buyUrl: book.affiliateUrl || `https://search.books.rakuten.co.jp/booksearch/?keyword=${encodeURIComponent(baseTitle)}`,
       })
 
       if (result.length >= 5) break
@@ -333,7 +329,8 @@ function StarRating({ rating, onChange }: { rating: number; onChange?: (r: numbe
 }
 
 function RakutenBuyButton({ title, affiliateUrl, size = 'normal' }: { title: string; affiliateUrl?: string; size?: 'normal' | 'small' }) {
-  const url = affiliateUrl || getFallbackBuyUrl(title)
+  const targetUrl = affiliateUrl || `https://search.books.rakuten.co.jp/booksearch/?keyword=${encodeURIComponent(title)}`
+  const url = `https://hb.afl.rakuten.co.jp/ichiba/${RAKUTEN_AFFILIATE_ID}/?pc=${encodeURIComponent(targetUrl)}`
   if (size === 'small') {
     return (
       <a
@@ -369,6 +366,78 @@ function RakutenBuyButton({ title, affiliateUrl, size = 'normal' }: { title: str
     >
       楽天で買う
     </a>
+  )
+}
+
+// ---- EditMangaModal ----
+function EditMangaModal({ manga, onSave, onClose }: {
+  manga: Manga
+  onSave: (updated: Manga) => void
+  onClose: () => void
+}) {
+  const [title, setTitle] = useState(manga.title)
+  const [currentVol, setCurrentVol] = useState(manga.currentVol ?? 0)
+  const [status, setStatus] = useState<Status>(manga.status)
+  const [isSeriesComplete, setIsSeriesComplete] = useState(manga.isSeriesComplete)
+  const [star, setStar] = useState(manga.star)
+
+  const inputStyle = {
+    width: '100%', padding: '10px 14px', borderRadius: 10,
+    border: '1px solid #e8e4df', fontSize: 14, outline: 'none',
+    boxSizing: 'border-box' as const, color: '#1a1a1a', background: '#fff',
+  }
+  const statusOptions: [Status, string][] = [
+    ['reading', '読書中'], ['completed', '読了'], ['dropped', '積読'], ['wishlist', '読みたい'],
+  ]
+
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 1000 }}
+      onClick={onClose}
+    >
+      <div
+        style={{ background: '#fff', width: '100%', maxWidth: 640, borderRadius: '20px 20px 0 0', padding: '24px 20px 48px', maxHeight: '85vh', overflowY: 'auto' }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+          <div style={{ fontWeight: 700, fontSize: 18 }}>漫画を編集</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#999', lineHeight: 1 }}>✕</button>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div>
+            <div style={{ fontSize: 12, color: '#666', fontWeight: 600, marginBottom: 6 }}>タイトル</div>
+            <input value={title} onChange={e => setTitle(e.target.value)} style={inputStyle} />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: '#666', fontWeight: 600, marginBottom: 8 }}>読んだ巻数</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+              <button onClick={() => setCurrentVol(v => Math.max(0, v - 1))} style={{ width: 36, height: 36, borderRadius: '50%', border: '1px solid #e8e4df', background: '#fff', cursor: 'pointer', fontSize: 20 }}>−</button>
+              <span style={{ fontSize: 22, fontWeight: 900, minWidth: 60, textAlign: 'center' }}>{currentVol}巻</span>
+              <button onClick={() => setCurrentVol(v => v + 1)} style={{ width: 36, height: 36, borderRadius: '50%', border: '1px solid #e8e4df', background: '#fff', cursor: 'pointer', fontSize: 20 }}>＋</button>
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: '#666', fontWeight: 600, marginBottom: 8 }}>ステータス</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {statusOptions.map(([val, label]) => (
+                <button key={val} onClick={() => setStatus(val)} style={{ padding: '8px 16px', borderRadius: 20, border: '1px solid', borderColor: status === val ? '#1a1a1a' : '#e8e4df', background: status === val ? '#1a1a1a' : '#fff', color: status === val ? '#fff' : '#666', fontSize: 13, cursor: 'pointer' }}>{label}</button>
+              ))}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button onClick={() => setIsSeriesComplete(v => !v)} style={{ flex: 1, padding: '10px', borderRadius: 12, border: '1px solid', borderColor: isSeriesComplete ? '#1a1a1a' : '#e8e4df', background: isSeriesComplete ? '#1a1a1a' : '#fff', color: isSeriesComplete ? '#fff' : '#666', fontSize: 13, cursor: 'pointer' }}>
+              完結済み {isSeriesComplete ? '✓' : ''}
+            </button>
+            <button onClick={() => setStar(v => !v)} style={{ flex: 1, padding: '10px', borderRadius: 12, border: '1px solid', borderColor: star ? '#e05c2a' : '#e8e4df', background: star ? '#fff3ee' : '#fff', color: star ? '#e05c2a' : '#666', fontSize: 13, cursor: 'pointer', fontWeight: star ? 700 : 400 }}>
+              ★ お気に入り {star ? '✓' : ''}
+            </button>
+          </div>
+          <button onClick={() => onSave({ ...manga, title, currentVol, status, isSeriesComplete, star })} style={{ width: '100%', padding: '14px', borderRadius: 24, border: 'none', background: '#e05c2a', color: '#fff', fontSize: 15, fontWeight: 700, cursor: 'pointer', marginTop: 4 }}>
+            保存する
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -779,6 +848,8 @@ export default function Home() {
   const [sortBy, setSortBy] = useState<'registered' | 'title' | 'unread' | 'rating'>('registered')
   const [fetchingIds, setFetchingIds] = useState<Set<string>>(new Set())
   const [updatingAll, setUpdatingAll] = useState(false)
+  const [editManga, setEditManga] = useState<Manga | null>(null)
+  const [promptCopied, setPromptCopied] = useState(false)
 
   const [singleTitle, setSingleTitle] = useState('')
   const [singleVol, setSingleVol] = useState(1)
@@ -910,6 +981,7 @@ export default function Home() {
         fetchedAt: existingManga?.fetchedAt ?? null,
         coverUrl: existingManga?.coverUrl ?? '',
         affiliateUrl: existingManga?.affiliateUrl ?? '',
+        author: existingManga?.author ?? '',
       }
       newMangas.push(manga)
       await upsertToSupabase(manga, user.id)
@@ -950,6 +1022,7 @@ export default function Home() {
       fetchedAt: existing?.fetchedAt ?? null,
       coverUrl: existing?.coverUrl ?? '',
       affiliateUrl: existing?.affiliateUrl ?? '',
+      author: existing?.author ?? '',
     }
     await upsertToSupabase(manga, user.id)
     if (!manga.fetchedAt) {
@@ -994,6 +1067,13 @@ export default function Home() {
     setMangas(prev => prev.map(m => m.id === id ? updated : m))
   }
 
+  const handleEditSave = async (updated: Manga) => {
+    if (!user) return
+    await upsertToSupabase(updated, user.id)
+    setMangas(prev => prev.map(m => m.id === updated.id ? updated : m))
+    setEditManga(null)
+  }
+
   const handleRefreshAll = async () => {
     if (!user || updatingAll) return
     setUpdatingAll(true)
@@ -1026,15 +1106,16 @@ export default function Home() {
     const seenAuthors = new Set<string>()
 
     for (const manga of topMangas) {
-      setRecommendProgress(`「${manga.title}」の著者を検索中...`)
-      const res = await fetch(`/api/rakuten?title=${encodeURIComponent(manga.title)}`)
-      const data = await res.json()
-      const author: string = data.author || ''
-
-      if (!author || seenAuthors.has(author)) {
+      let author = manga.author
+      if (!author) {
+        setRecommendProgress(`「${manga.title}」の著者を検索中...`)
+        const res = await fetch(`/api/rakuten?title=${encodeURIComponent(manga.title)}`)
+        const data = await res.json()
+        author = data.author || ''
         await new Promise(r => setTimeout(r, 400))
-        continue
       }
+
+      if (!author || seenAuthors.has(author)) continue
       seenAuthors.add(author)
 
       setRecommendProgress(`${author} の作品を検索中...`)
@@ -1051,6 +1132,26 @@ export default function Home() {
     setRecommendProgress('')
     setLoadingRecommend(false)
     setRecommendFetched(true)
+  }
+
+  const handleCopyPrompt = async () => {
+    const shelf = mangas.filter(m => m.status !== 'wishlist')
+    const lines = shelf.map(m => {
+      const parts: string[] = []
+      if (m.currentVol) parts.push(`${m.currentVol}巻`)
+      if (m.rating) parts.push(`評価${m.rating}`)
+      if (m.star) parts.push('お気に入り')
+      if (m.isSeriesComplete) parts.push('完結')
+      return `・${m.title}${parts.length ? `（${parts.join('・')}）` : ''}`
+    })
+    const completeCount = shelf.filter(m => m.isSeriesComplete).length
+    const starCount = shelf.filter(m => m.star).length
+    const rated = shelf.filter(m => m.rating > 0)
+    const avg = rated.length ? (rated.reduce((s, m) => s + m.rating, 0) / rated.length).toFixed(1) : '0.0'
+    const prompt = `以下は私が読んだ漫画リストです。この読書傾向からわかる私の漫画の好みや人格を分析してください。\n\n【登録漫画】\n${lines.join('\n')}\n\n完結済み作品数：${completeCount}作品\nお気に入り数：${starCount}作品\n平均評価：${avg}`
+    await navigator.clipboard.writeText(prompt)
+    setPromptCopied(true)
+    setTimeout(() => setPromptCopied(false), 2000)
   }
 
   const totalWorks = mangas.filter(m => m.status !== 'wishlist').length
@@ -1150,7 +1251,7 @@ export default function Home() {
                         <div style={{ fontWeight: 700, fontSize: 15 }}>
                           {m.title}
                           {m.isFuture
-                            ? <span style={{ marginLeft: 8, fontSize: 11, background: '#fff3e0', color: '#e05c2a', borderRadius: 4, padding: '2px 6px' }}>{m.releaseDate?.replace('年', '/').replace('月', '/').replace('日', '')}</span>
+                            ? <span style={{ marginLeft: 8, fontSize: 11, background: '#fff3e0', color: '#e05c2a', borderRadius: 4, padding: '2px 6px' }}>{m.releaseDate?.replace('年', '/').replace('月', '/').replace(/日.*/, '') + '発売予定'}</span>
                             : <span style={{ marginLeft: 8, fontSize: 11, background: '#e05c2a', color: '#fff', borderRadius: 4, padding: '2px 6px' }}>NEW</span>
                           }
                         </div>
@@ -1187,6 +1288,9 @@ export default function Home() {
                     <span key={tag} style={{ background: '#333', color: '#ccc', fontSize: 12, padding: '4px 10px', borderRadius: 20 }}>{tag}</span>
                   ))}
                 </div>
+                <button onClick={handleCopyPrompt} style={{ marginTop: 16, padding: '8px 18px', borderRadius: 20, border: '1px solid #555', background: 'transparent', color: promptCopied ? '#aaa' : '#ddd', fontSize: 12, cursor: 'pointer' }}>
+                  {promptCopied ? 'コピーしました！' : '🤖 AIに詳しく聞く'}
+                </button>
               </div>
             )}
           </div>
@@ -1276,9 +1380,12 @@ export default function Home() {
                         </div>
                       )}
                     </div>
-                    <button onClick={() => refreshOne(m.id)} disabled={isFetching} style={{ width: 32, height: 32, borderRadius: '50%', border: '1px solid #e8e4df', background: '#fff', cursor: isFetching ? 'default' : 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, opacity: isFetching ? 0.5 : 1 }}>
-                      {isFetching ? '⏳' : '🔄'}
-                    </button>
+                    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      <button onClick={() => setEditManga(m)} style={{ width: 32, height: 32, borderRadius: '50%', border: '1px solid #e8e4df', background: '#fff', cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✏️</button>
+                      <button onClick={() => refreshOne(m.id)} disabled={isFetching} style={{ width: 32, height: 32, borderRadius: '50%', border: '1px solid #e8e4df', background: '#fff', cursor: isFetching ? 'default' : 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: isFetching ? 0.5 : 1 }}>
+                        {isFetching ? '⏳' : '🔄'}
+                      </button>
+                    </div>
                   </div>
                 )
               })}
@@ -1376,7 +1483,7 @@ export default function Home() {
                       isSeriesComplete: false, status: 'wishlist', isMidVolume: false,
                       star: false, rating: 0, registeredAt: Date.now(),
                       latestVol: null, releaseDate: '', isFuture: false, fetchedAt: null, coverUrl: '',
-                      affiliateUrl: '',
+                      affiliateUrl: '', author: '',
                     }
                     await upsertToSupabase(manga, user.id)
                     setMangas(prev => [manga, ...prev])
@@ -1525,6 +1632,7 @@ export default function Home() {
           </div>
         )}
       </main>
+      {editManga && <EditMangaModal manga={editManga} onSave={handleEditSave} onClose={() => setEditManga(null)} />}
     </div>
   )
 }
