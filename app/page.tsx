@@ -4,8 +4,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { createClient } from '@supabase/supabase-js'
 
 const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co',
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-key'
 )
 
 // ---- Types ----
@@ -27,11 +27,25 @@ interface Manga {
   isFuture: boolean
   fetchedAt: number | null
   coverUrl: string
+  affiliateUrl: string
 }
 
 interface UserProfile {
   id: string
   email: string | undefined
+}
+
+interface RecommendBook {
+  title: string
+  author: string
+  coverUrl: string
+  buyUrl: string
+}
+
+interface RecommendGroup {
+  sourceManga: string
+  author: string
+  books: RecommendBook[]
 }
 
 // ---- Supabase helpers ----
@@ -53,6 +67,7 @@ function toRow(m: Manga, userId: string) {
     is_future: m.isFuture,
     fetched_at: m.fetchedAt,
     cover_url: m.coverUrl,
+    affiliate_url: m.affiliateUrl,
   }
 }
 
@@ -73,6 +88,7 @@ function fromRow(row: any): Manga {
     isFuture: row.is_future,
     fetchedAt: row.fetched_at,
     coverUrl: row.cover_url || '',
+    affiliateUrl: row.affiliate_url || '',
   }
 }
 
@@ -145,7 +161,12 @@ function parseMemo(text: string): Partial<Manga>[] {
 }
 
 async function fetchLatestVol(title: string): Promise<{
-  latestVol: number | null; releaseDate: string; isFuture: boolean; coverUrl: string
+  latestVol: number | null
+  releaseDate: string
+  isFuture: boolean
+  coverUrl: string
+  author: string
+  affiliateUrl: string
 }> {
   try {
     const res = await fetch(`/api/rakuten?title=${encodeURIComponent(title)}`)
@@ -156,12 +177,15 @@ async function fetchLatestVol(title: string): Promise<{
         releaseDate: data.releaseDate || '',
         isFuture: data.isFuture || false,
         coverUrl: data.coverUrl || '',
+        author: data.author || '',
+        affiliateUrl: data.affiliateUrl || '',
       }
     }
   } catch {}
-  return { latestVol: null, releaseDate: '', isFuture: false, coverUrl: '' }
+  return { latestVol: null, releaseDate: '', isFuture: false, coverUrl: '', author: '', affiliateUrl: '' }
 }
 
+// ---- Helpers ----
 function stringToColor(str: string): string {
   const colors = ['#2d6a9f', '#4a9e6b', '#8b4a2d', '#6a4a9e', '#9e6a2d', '#2d8b6a', '#9e2d4a', '#4a6a9e', '#6a9e2d', '#9e4a6a']
   let hash = 0
@@ -190,7 +214,55 @@ function getMangaPersonality(mangas: Manga[]): { title: string; desc: string; ta
   }
 }
 
-// ---- MangaCover ----
+function getFallbackBuyUrl(title: string): string {
+  const affiliateId = process.env.NEXT_PUBLIC_RAKUTEN_AFFILIATE_ID
+  const searchUrl = `https://search.books.rakuten.co.jp/booksearch/?keyword=${encodeURIComponent(title)}`
+  if (affiliateId) {
+    return `https://hb.afl.rakuten.co.jp/hgc/${affiliateId}/0/?pc=${encodeURIComponent(searchUrl)}`
+  }
+  return searchUrl
+}
+
+// 著者で検索してシリーズをユニーク化して返す
+async function fetchAuthorRecommends(author: string, shelfTitles: string[]): Promise<RecommendBook[]> {
+  try {
+    const res = await fetch(`/api/rakuten?mode=author&author=${encodeURIComponent(author)}`)
+    const data = await res.json()
+    if (!data.found || !data.books) return []
+
+    const seen = new Set<string>()
+    const result: RecommendBook[] = []
+
+    for (const book of data.books) {
+      // 巻数を除いたシリーズ名
+      const baseTitle = book.title.replace(/\s*[\d０-９]+\s*$/, '').replace(/（.*?）/g, '').trim()
+      if (!baseTitle) continue
+      if (seen.has(baseTitle)) continue
+
+      // すでに本棚にある作品はスキップ
+      const isOnShelf = shelfTitles.some(t => {
+        const base = t.replace(/\s*[\d０-９]+\s*$/, '').trim()
+        return base === baseTitle || base.includes(baseTitle) || baseTitle.includes(base)
+      })
+      if (isOnShelf) continue
+
+      seen.add(baseTitle)
+      result.push({
+        title: baseTitle,
+        author: book.author,
+        coverUrl: book.coverUrl,
+        buyUrl: book.affiliateUrl || getFallbackBuyUrl(baseTitle),
+      })
+
+      if (result.length >= 5) break
+    }
+    return result
+  } catch {
+    return []
+  }
+}
+
+// ---- Components ----
 function MangaCover({ manga, size = 44 }: { manga: Manga; size?: number }) {
   const [imgError, setImgError] = useState(false)
   if (manga.coverUrl && !imgError) {
@@ -216,7 +288,31 @@ function MangaCover({ manga, size = 44 }: { manga: Manga; size?: number }) {
   )
 }
 
-// ---- StarRating ----
+function RecommendCover({ coverUrl, title, size = 44 }: { coverUrl: string; title: string; size?: number }) {
+  const [imgError, setImgError] = useState(false)
+  if (coverUrl && !imgError) {
+    return (
+      <img
+        src={coverUrl}
+        alt={title}
+        onError={() => setImgError(true)}
+        style={{ width: size, height: size * 1.4, borderRadius: 6, objectFit: 'cover', flexShrink: 0 }}
+      />
+    )
+  }
+  return (
+    <div style={{
+      width: size, height: size,
+      borderRadius: 8, background: stringToColor(title),
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontSize: size * 0.22, color: '#fff', fontWeight: 700,
+      textAlign: 'center', lineHeight: 1.3, flexShrink: 0,
+    }}>
+      {title.slice(0, 4)}
+    </div>
+  )
+}
+
 function StarRating({ rating, onChange }: { rating: number; onChange?: (r: number) => void }) {
   return (
     <div style={{ display: 'flex', gap: 2 }}>
@@ -236,6 +332,46 @@ function StarRating({ rating, onChange }: { rating: number; onChange?: (r: numbe
   )
 }
 
+function RakutenBuyButton({ title, affiliateUrl, size = 'normal' }: { title: string; affiliateUrl?: string; size?: 'normal' | 'small' }) {
+  const url = affiliateUrl || getFallbackBuyUrl(title)
+  if (size === 'small') {
+    return (
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={e => e.stopPropagation()}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 3,
+          padding: '3px 8px', borderRadius: 10,
+          background: '#bf0000', color: '#fff',
+          fontSize: 10, fontWeight: 700, textDecoration: 'none',
+          flexShrink: 0, whiteSpace: 'nowrap',
+        }}
+      >
+        楽天
+      </a>
+    )
+  }
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={e => e.stopPropagation()}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        padding: '6px 14px', borderRadius: 20,
+        background: '#bf0000', color: '#fff',
+        fontSize: 12, fontWeight: 700, textDecoration: 'none',
+        flexShrink: 0,
+      }}
+    >
+      楽天で買う
+    </a>
+  )
+}
+
 // ---- AuthScreen ----
 type AuthMode = 'login' | 'signup' | 'forgot'
 
@@ -246,6 +382,19 @@ function AuthScreen({ onAuth }: { onAuth: (user: UserProfile) => void }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+
+  const inputStyle = {
+    width: '100%',
+    padding: '12px 14px',
+    borderRadius: 10,
+    border: '1px solid #e8e4df',
+    fontSize: 14,
+    outline: 'none',
+    boxSizing: 'border-box' as const,
+    color: '#1a1a1a',
+    background: '#fff',
+    WebkitTextFillColor: '#1a1a1a',
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -268,7 +417,6 @@ function AuthScreen({ onAuth }: { onAuth: (user: UserProfile) => void }) {
         const { data, error } = await supabase.auth.signUp({ email, password })
         if (error) throw error
         if (data.user && !data.session) {
-          // メール確認が必要な場合
           setMessage('確認メールを送信しました。メールをクリックしてアカウントを有効化してください。')
           setLoading(false)
           return
@@ -314,7 +462,6 @@ function AuthScreen({ onAuth }: { onAuth: (user: UserProfile) => void }) {
       justifyContent: 'center',
       padding: '20px 16px',
     }}>
-      {/* Logo */}
       <div style={{ marginBottom: 32, textAlign: 'center' }}>
         <div style={{ fontWeight: 900, fontSize: 32, letterSpacing: '-1px', marginBottom: 8 }}>
           <span style={{ color: '#1a1a1a' }}>MANGA</span>
@@ -323,7 +470,6 @@ function AuthScreen({ onAuth }: { onAuth: (user: UserProfile) => void }) {
         <div style={{ fontSize: 13, color: '#999' }}>あなたの漫画遺伝子を記録する</div>
       </div>
 
-      {/* Card */}
       <div style={{
         width: '100%',
         maxWidth: 400,
@@ -332,7 +478,6 @@ function AuthScreen({ onAuth }: { onAuth: (user: UserProfile) => void }) {
         padding: 28,
         boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
       }}>
-        {/* Tab switcher (login / signup only) */}
         {mode !== 'forgot' && (
           <div style={{ display: 'flex', background: '#f5f2ee', borderRadius: 12, padding: 4, marginBottom: 24 }}>
             {(['login', 'signup'] as const).map(m => (
@@ -349,7 +494,6 @@ function AuthScreen({ onAuth }: { onAuth: (user: UserProfile) => void }) {
                   fontWeight: 700,
                   fontSize: 14,
                   cursor: 'pointer',
-                  transition: 'all 0.2s',
                 }}
               >
                 {m === 'login' ? 'ログイン' : '新規登録'}
@@ -371,7 +515,6 @@ function AuthScreen({ onAuth }: { onAuth: (user: UserProfile) => void }) {
           </div>
         )}
 
-        {/* Google login */}
         {mode !== 'forgot' && (
           <>
             <button
@@ -410,7 +553,6 @@ function AuthScreen({ onAuth }: { onAuth: (user: UserProfile) => void }) {
           </>
         )}
 
-        {/* Form */}
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div>
             <div style={{ fontSize: 12, color: '#666', marginBottom: 6, fontWeight: 600 }}>メールアドレス</div>
@@ -420,16 +562,7 @@ function AuthScreen({ onAuth }: { onAuth: (user: UserProfile) => void }) {
               onChange={e => setEmail(e.target.value)}
               placeholder="example@email.com"
               required
-              style={{
-                width: '100%',
-                padding: '12px 14px',
-                borderRadius: 10,
-                border: '1px solid #e8e4df',
-                fontSize: 14,
-                outline: 'none',
-                boxSizing: 'border-box',
-                transition: 'border-color 0.2s',
-              }}
+              style={inputStyle}
               onFocus={e => e.target.style.borderColor = '#1a1a1a'}
               onBlur={e => e.target.style.borderColor = '#e8e4df'}
             />
@@ -445,15 +578,7 @@ function AuthScreen({ onAuth }: { onAuth: (user: UserProfile) => void }) {
                 placeholder={mode === 'signup' ? '6文字以上' : 'パスワード'}
                 required
                 minLength={6}
-                style={{
-                  width: '100%',
-                  padding: '12px 14px',
-                  borderRadius: 10,
-                  border: '1px solid #e8e4df',
-                  fontSize: 14,
-                  outline: 'none',
-                  boxSizing: 'border-box',
-                }}
+                style={inputStyle}
                 onFocus={e => e.target.style.borderColor = '#1a1a1a'}
                 onBlur={e => e.target.style.borderColor = '#e8e4df'}
               />
@@ -486,7 +611,6 @@ function AuthScreen({ onAuth }: { onAuth: (user: UserProfile) => void }) {
               fontWeight: 700,
               cursor: loading ? 'default' : 'pointer',
               marginTop: 4,
-              transition: 'background 0.2s',
             }}
           >
             {loading ? '処理中...' : mode === 'login' ? 'ログイン' : mode === 'signup' ? 'アカウントを作成' : 'リセットメールを送信'}
@@ -512,10 +636,136 @@ function AuthScreen({ onAuth }: { onAuth: (user: UserProfile) => void }) {
   )
 }
 
+// ---- ResetPasswordScreen ----
+function ResetPasswordScreen({ onComplete }: { onComplete: () => void }) {
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState(false)
+
+  const inputStyle = {
+    width: '100%',
+    padding: '12px 14px',
+    borderRadius: 10,
+    border: '1px solid #e8e4df',
+    fontSize: 14,
+    outline: 'none',
+    boxSizing: 'border-box' as const,
+    color: '#1a1a1a',
+    background: '#fff',
+    WebkitTextFillColor: '#1a1a1a',
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (password !== confirm) { setError('パスワードが一致しません'); return }
+    if (password.length < 6) { setError('パスワードは6文字以上にしてください'); return }
+    setError('')
+    setLoading(true)
+    const { error } = await supabase.auth.updateUser({ password })
+    if (error) {
+      setError(error.message)
+      setLoading(false)
+      return
+    }
+    setSuccess(true)
+    if (typeof window !== 'undefined' && window.location.hash) {
+      window.history.replaceState(null, '', window.location.pathname)
+    }
+    setTimeout(onComplete, 2000)
+  }
+
+  return (
+    <div style={{
+      minHeight: '100vh',
+      background: '#f5f2ee',
+      fontFamily: "'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif",
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '20px 16px',
+    }}>
+      <div style={{ marginBottom: 32, textAlign: 'center' }}>
+        <div style={{ fontWeight: 900, fontSize: 32, letterSpacing: '-1px', marginBottom: 8 }}>
+          <span style={{ color: '#1a1a1a' }}>MANGA</span>
+          <span style={{ color: '#e05c2a' }}>DNA</span>
+        </div>
+      </div>
+
+      <div style={{
+        width: '100%',
+        maxWidth: 400,
+        background: '#fff',
+        borderRadius: 20,
+        padding: 28,
+        boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
+      }}>
+        <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 4 }}>新しいパスワードを設定</div>
+        <div style={{ fontSize: 13, color: '#999', marginBottom: 20 }}>6文字以上のパスワードを入力してください</div>
+
+        {success ? (
+          <div style={{
+            background: '#f0fff4', border: '1px solid #c3e6cb',
+            borderRadius: 10, padding: '16px', fontSize: 14, color: '#2d7a4a', textAlign: 'center',
+          }}>
+            パスワードを更新しました。<br />ホーム画面に移動します...
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 6, fontWeight: 600 }}>新しいパスワード</div>
+              <input
+                type="password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="6文字以上"
+                required
+                minLength={6}
+                style={inputStyle}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 6, fontWeight: 600 }}>パスワード（確認）</div>
+              <input
+                type="password"
+                value={confirm}
+                onChange={e => setConfirm(e.target.value)}
+                placeholder="もう一度入力"
+                required
+                minLength={6}
+                style={inputStyle}
+              />
+            </div>
+            {error && (
+              <div style={{ background: '#fff3f0', border: '1px solid #ffd5cc', borderRadius: 8, padding: '10px 12px', fontSize: 13, color: '#c0392b' }}>
+                {error}
+              </div>
+            )}
+            <button
+              type="submit"
+              disabled={loading}
+              style={{
+                width: '100%', padding: '13px', borderRadius: 24, border: 'none',
+                background: loading ? '#ccc' : '#1a1a1a', color: '#fff',
+                fontSize: 15, fontWeight: 700, cursor: loading ? 'default' : 'pointer', marginTop: 4,
+              }}
+            >
+              {loading ? '更新中...' : 'パスワードを更新する'}
+            </button>
+          </form>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ---- Main App ----
 export default function Home() {
   const [user, setUser] = useState<UserProfile | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
+  const [isRecoveryMode, setIsRecoveryMode] = useState(false)
 
   const [tab, setTab] = useState<'home' | 'shelf' | 'register' | 'recommend'>('home')
   const [mangas, setMangas] = useState<Manga[]>([])
@@ -528,29 +778,51 @@ export default function Home() {
   const [filterStatus, setFilterStatus] = useState<'all' | 'unread' | 'star' | 'wishlist'>('all')
   const [sortBy, setSortBy] = useState<'registered' | 'title' | 'unread' | 'rating'>('registered')
   const [fetchingIds, setFetchingIds] = useState<Set<string>>(new Set())
+  const [updatingAll, setUpdatingAll] = useState(false)
 
   const [singleTitle, setSingleTitle] = useState('')
   const [singleVol, setSingleVol] = useState(1)
   const [singleMode, setSingleMode] = useState(false)
   const [singleRegistering, setSingleRegistering] = useState(false)
 
+  // Recommend state
+  const [recommendGroups, setRecommendGroups] = useState<RecommendGroup[]>([])
+  const [loadingRecommend, setLoadingRecommend] = useState(false)
+  const [recommendFetched, setRecommendFetched] = useState(false)
+  const [recommendProgress, setRecommendProgress] = useState('')
+
   // ---- Auth state ----
   useEffect(() => {
-    // セッション確認
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        setUser({ id: session.user.id, email: session.user.email })
-      }
-      setAuthLoading(false)
-    })
+    // URLハッシュにアクセストークンがあるか確認（メール確認・パスワードリセット後）
+    const hasHashToken = typeof window !== 'undefined' &&
+      window.location.hash.includes('access_token')
 
-    // 認証状態の変化を監視
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        setUser({ id: session.user.id, email: session.user.email })
-      } else {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'INITIAL_SESSION') {
+        // ハッシュトークンがある場合は後続イベント（SIGNED_IN / PASSWORD_RECOVERY）を待つ
+        if (!hasHashToken) {
+          if (session?.user) setUser({ id: session.user.id, email: session.user.email })
+          setAuthLoading(false)
+        }
+      } else if (event === 'PASSWORD_RECOVERY') {
+        // パスワードリセットリンクからの遷移
+        setIsRecoveryMode(true)
+        if (session?.user) setUser({ id: session.user.id, email: session.user.email })
+        setAuthLoading(false)
+      } else if (event === 'SIGNED_IN') {
+        // メール確認後・通常ログイン後
+        setIsRecoveryMode(false)
+        if (session?.user) setUser({ id: session.user.id, email: session.user.email })
+        setAuthLoading(false)
+        // URLハッシュをクリーンアップ
+        if (typeof window !== 'undefined' && window.location.hash) {
+          window.history.replaceState(null, '', window.location.pathname)
+        }
+      } else if (event === 'SIGNED_OUT') {
+        setIsRecoveryMode(false)
         setUser(null)
         setMangas([])
+        setAuthLoading(false)
       }
     })
 
@@ -573,6 +845,19 @@ export default function Home() {
     setMangas([])
   }
 
+  // useCallback は early return より前に宣言しなければならない（Rules of Hooks）
+  const refreshOne = useCallback(async (id: string) => {
+    if (!user) return
+    const manga = mangas.find(m => m.id === id)
+    if (!manga) return
+    setFetchingIds(prev => new Set(prev).add(id))
+    const info = await fetchLatestVol(manga.title)
+    const updated = { ...manga, ...info, fetchedAt: Date.now() }
+    await upsertToSupabase(updated, user.id)
+    setMangas(prev => prev.map(m => m.id === id ? updated : m))
+    setFetchingIds(prev => { const s = new Set(prev); s.delete(id); return s })
+  }, [mangas, user])
+
   // ---- Auth loading ----
   if (authLoading) {
     return (
@@ -585,6 +870,11 @@ export default function Home() {
         </div>
       </div>
     )
+  }
+
+  // ---- Password recovery ----
+  if (isRecoveryMode) {
+    return <ResetPasswordScreen onComplete={() => setIsRecoveryMode(false)} />
   }
 
   // ---- Not authenticated ----
@@ -619,6 +909,7 @@ export default function Home() {
         isFuture: existingManga?.isFuture ?? false,
         fetchedAt: existingManga?.fetchedAt ?? null,
         coverUrl: existingManga?.coverUrl ?? '',
+        affiliateUrl: existingManga?.affiliateUrl ?? '',
       }
       newMangas.push(manga)
       await upsertToSupabase(manga, user.id)
@@ -658,6 +949,7 @@ export default function Home() {
       isFuture: existing?.isFuture ?? false,
       fetchedAt: existing?.fetchedAt ?? null,
       coverUrl: existing?.coverUrl ?? '',
+      affiliateUrl: existing?.affiliateUrl ?? '',
     }
     await upsertToSupabase(manga, user.id)
     if (!manga.fetchedAt) {
@@ -683,18 +975,6 @@ export default function Home() {
     setTab('home')
   }
 
-  const refreshOne = useCallback(async (id: string) => {
-    if (!user) return
-    const manga = mangas.find(m => m.id === id)
-    if (!manga) return
-    setFetchingIds(prev => new Set(prev).add(id))
-    const info = await fetchLatestVol(manga.title)
-    const updated = { ...manga, ...info, fetchedAt: Date.now() }
-    await upsertToSupabase(updated, user.id)
-    setMangas(prev => prev.map(m => m.id === id ? updated : m))
-    setFetchingIds(prev => { const s = new Set(prev); s.delete(id); return s })
-  }, [mangas, user])
-
   const updateRating = async (id: string, rating: number) => {
     if (!user) return
     const manga = mangas.find(m => m.id === id)
@@ -712,6 +992,65 @@ export default function Home() {
     const updated = { ...manga, currentVol: newVol }
     await upsertToSupabase(updated, user.id)
     setMangas(prev => prev.map(m => m.id === id ? updated : m))
+  }
+
+  const handleRefreshAll = async () => {
+    if (!user || updatingAll) return
+    setUpdatingAll(true)
+    const targets = mangas.filter(m => m.status !== 'wishlist')
+    for (const manga of targets) {
+      await refreshOne(manga.id)
+      await new Promise(r => setTimeout(r, 400))
+    }
+    setUpdatingAll(false)
+  }
+
+  const handleFetchRecommendations = async () => {
+    if (loadingRecommend) return
+    setLoadingRecommend(true)
+    setRecommendGroups([])
+
+    const shelfTitles = mangas.map(m => m.title)
+    const topMangas = mangas
+      .filter(m => m.rating >= 4 && m.status !== 'wishlist')
+      .sort((a, b) => b.rating - a.rating)
+      .slice(0, 3)
+
+    if (topMangas.length === 0) {
+      setLoadingRecommend(false)
+      setRecommendFetched(true)
+      return
+    }
+
+    const groups: RecommendGroup[] = []
+    const seenAuthors = new Set<string>()
+
+    for (const manga of topMangas) {
+      setRecommendProgress(`「${manga.title}」の著者を検索中...`)
+      const res = await fetch(`/api/rakuten?title=${encodeURIComponent(manga.title)}`)
+      const data = await res.json()
+      const author: string = data.author || ''
+
+      if (!author || seenAuthors.has(author)) {
+        await new Promise(r => setTimeout(r, 400))
+        continue
+      }
+      seenAuthors.add(author)
+
+      setRecommendProgress(`${author} の作品を検索中...`)
+      await new Promise(r => setTimeout(r, 400))
+
+      const books = await fetchAuthorRecommends(author, shelfTitles)
+      if (books.length > 0) {
+        groups.push({ sourceManga: manga.title, author, books })
+      }
+      await new Promise(r => setTimeout(r, 400))
+    }
+
+    setRecommendGroups(groups)
+    setRecommendProgress('')
+    setLoadingRecommend(false)
+    setRecommendFetched(true)
   }
 
   const totalWorks = mangas.filter(m => m.status !== 'wishlist').length
@@ -764,23 +1103,14 @@ export default function Home() {
                 {t === 'home' ? 'ホーム' : t === 'shelf' ? '本棚' : t === 'register' ? '登録' : 'おすすめ'}
               </button>
             ))}
-            {/* アカウントメニュー */}
             <button
               onClick={handleSignOut}
               title={`${user.email} からログアウト`}
               style={{
-                marginLeft: 4,
-                width: 32,
-                height: 32,
-                borderRadius: '50%',
-                border: '1px solid #e8e4df',
-                background: '#f5f2ee',
-                cursor: 'pointer',
-                fontSize: 14,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
+                marginLeft: 4, width: 32, height: 32,
+                borderRadius: '50%', border: '1px solid #e8e4df',
+                background: '#f5f2ee', cursor: 'pointer', fontSize: 14,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
               }}
             >
               👤
@@ -825,6 +1155,9 @@ export default function Home() {
                           }
                         </div>
                         <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>あなた：{m.currentVol}巻 → 最新：{m.latestVol}巻</div>
+                        <div style={{ marginTop: 8 }}>
+                          <RakutenBuyButton title={m.title} affiliateUrl={m.affiliateUrl} />
+                        </div>
                       </div>
                       <div style={{ fontSize: 16, fontWeight: 900, color: '#e05c2a', flexShrink: 0 }}>
                         {m.isFuture ? '予告' : `+${(m.latestVol || 0) - (m.currentVol || 0)}巻`}
@@ -863,7 +1196,16 @@ export default function Home() {
         {tab === 'shelf' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="タイトルで検索..." style={{ width: '100%', padding: '12px 16px', borderRadius: 24, border: '1px solid #e8e4df', background: '#fff', fontSize: 14, outline: 'none', boxSizing: 'border-box' }} />
+              <input
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="タイトルで検索..."
+                style={{
+                  width: '100%', padding: '12px 16px', borderRadius: 24,
+                  border: '1px solid #e8e4df', background: '#fff', fontSize: 14, outline: 'none',
+                  boxSizing: 'border-box', color: '#1a1a1a',
+                }}
+              />
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {(['all', 'unread', 'star', 'wishlist'] as const).map(f => (
                   <button key={f} onClick={() => setFilterStatus(f)} style={{
@@ -885,7 +1227,20 @@ export default function Home() {
               </div>
             </div>
 
-            <div style={{ fontSize: 12, color: '#999' }}>{filteredMangas.length}作品</div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ fontSize: 12, color: '#999' }}>{filteredMangas.length}作品</div>
+              <button
+                onClick={handleRefreshAll}
+                disabled={updatingAll}
+                style={{
+                  padding: '6px 14px', borderRadius: 20, border: '1px solid #e8e4df',
+                  background: updatingAll ? '#f0f0f0' : '#fff', color: updatingAll ? '#999' : '#666',
+                  fontSize: 12, cursor: updatingAll ? 'default' : 'pointer',
+                }}
+              >
+                {updatingAll ? '更新中...' : '🔄 全て更新'}
+              </button>
+            </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {filteredMangas.map(m => {
@@ -910,13 +1265,14 @@ export default function Home() {
                         )}
                       </div>
                       {m.status !== 'wishlist' && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
                           <StarRating rating={m.rating} onChange={(r) => updateRating(m.id, r)} />
                           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                             <button onClick={() => updateVol(m.id, -1)} style={{ width: 24, height: 24, borderRadius: '50%', border: '1px solid #e8e4df', background: '#fff', cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
                             <span style={{ fontSize: 12, color: '#666', minWidth: 30, textAlign: 'center' }}>{m.currentVol || 0}巻</span>
                             <button onClick={() => updateVol(m.id, 1)} style={{ width: 24, height: 24, borderRadius: '50%', border: '1px solid #e8e4df', background: '#fff', cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>＋</button>
                           </div>
+                          <RakutenBuyButton title={m.title} affiliateUrl={m.affiliateUrl} size="small" />
                         </div>
                       )}
                     </div>
@@ -943,7 +1299,18 @@ export default function Home() {
               <div style={{ background: '#fff', borderRadius: 16, padding: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
                 <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>メモから一括登録</div>
                 <div style={{ fontSize: 13, color: '#999', marginBottom: 14 }}>「・キングダム 76★」のような形式で貼り付けてください</div>
-                <textarea value={memo} onChange={e => setMemo(e.target.value)} placeholder={`例：\n・キングダム 76★\n・ブルーロック 38\n・宇宙兄弟 45★`} rows={10} style={{ width: '100%', padding: '12px 14px', borderRadius: 10, border: '1px solid #e8e4df', fontSize: 14, lineHeight: 1.7, resize: 'vertical', outline: 'none', boxSizing: 'border-box', fontFamily: 'monospace' }} />
+                <textarea
+                  value={memo}
+                  onChange={e => setMemo(e.target.value)}
+                  placeholder={`例：\n・キングダム 76★\n・ブルーロック 38\n・宇宙兄弟 45★`}
+                  rows={10}
+                  style={{
+                    width: '100%', padding: '12px 14px', borderRadius: 10,
+                    border: '1px solid #e8e4df', fontSize: 14, lineHeight: 1.7,
+                    resize: 'vertical', outline: 'none', boxSizing: 'border-box',
+                    fontFamily: 'monospace', color: '#1a1a1a', background: '#fff',
+                  }}
+                />
                 <button onClick={handleParse} disabled={!memo.trim()} style={{ marginTop: 12, width: '100%', padding: '12px', borderRadius: 24, border: 'none', background: memo.trim() ? '#1a1a1a' : '#e0e0e0', color: memo.trim() ? '#fff' : '#999', fontSize: 14, fontWeight: 700, cursor: memo.trim() ? 'pointer' : 'default' }}>解析する</button>
 
                 {parsed.length > 0 && (
@@ -976,7 +1343,16 @@ export default function Home() {
                 <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16 }}>1冊ずつ登録</div>
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontSize: 13, color: '#666', marginBottom: 6 }}>タイトル</div>
-                  <input value={singleTitle} onChange={e => setSingleTitle(e.target.value)} placeholder="例：キングダム" style={{ width: '100%', padding: '12px 14px', borderRadius: 10, border: '1px solid #e8e4df', fontSize: 14, outline: 'none', boxSizing: 'border-box' }} />
+                  <input
+                    value={singleTitle}
+                    onChange={e => setSingleTitle(e.target.value)}
+                    placeholder="例：キングダム"
+                    style={{
+                      width: '100%', padding: '12px 14px', borderRadius: 10,
+                      border: '1px solid #e8e4df', fontSize: 14, outline: 'none',
+                      boxSizing: 'border-box', color: '#1a1a1a', background: '#fff',
+                    }}
+                  />
                 </div>
                 <div style={{ marginBottom: 20 }}>
                   <div style={{ fontSize: 13, color: '#666', marginBottom: 6 }}>読んだ巻数</div>
@@ -1000,6 +1376,7 @@ export default function Home() {
                       isSeriesComplete: false, status: 'wishlist', isMidVolume: false,
                       star: false, rating: 0, registeredAt: Date.now(),
                       latestVol: null, releaseDate: '', isFuture: false, fetchedAt: null, coverUrl: '',
+                      affiliateUrl: '',
                     }
                     await upsertToSupabase(manga, user.id)
                     setMangas(prev => [manga, ...prev])
@@ -1018,8 +1395,88 @@ export default function Home() {
         {/* ===== RECOMMEND ===== */}
         {tab === 'recommend' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+            {/* AI推薦セクション */}
             <div style={{ background: '#fff', borderRadius: 16, padding: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-              <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>⭐️ 友達におすすめできる漫画</div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                <div style={{ fontWeight: 700, fontSize: 16 }}>あなたへのおすすめ</div>
+                {recommendFetched && !loadingRecommend && (
+                  <button
+                    onClick={() => { setRecommendFetched(false); handleFetchRecommendations() }}
+                    style={{ background: 'none', border: '1px solid #e8e4df', borderRadius: 20, padding: '4px 12px', fontSize: 12, color: '#666', cursor: 'pointer' }}
+                  >
+                    更新
+                  </button>
+                )}
+              </div>
+              <div style={{ fontSize: 13, color: '#999', marginBottom: 16 }}>高評価作品の著者から、まだ読んでいない作品をご提案</div>
+
+              {!recommendFetched && !loadingRecommend && (
+                <div style={{ textAlign: 'center' }}>
+                  {mangas.filter(m => m.rating >= 4).length === 0 ? (
+                    <div style={{ color: '#999', fontSize: 13, padding: '16px 0' }}>
+                      本棚で4〜5の評価をつけると、おすすめが表示されます
+                    </div>
+                  ) : (
+                    <button
+                      onClick={handleFetchRecommendations}
+                      style={{
+                        background: '#1a1a1a', color: '#fff', border: 'none',
+                        borderRadius: 24, padding: '12px 28px',
+                        fontSize: 14, fontWeight: 700, cursor: 'pointer',
+                      }}
+                    >
+                      おすすめを探す
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {loadingRecommend && (
+                <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                  <div style={{ fontSize: 24, marginBottom: 12 }}>🔍</div>
+                  <div style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>楽天ブックスで検索中...</div>
+                  {recommendProgress && (
+                    <div style={{ fontSize: 12, color: '#999' }}>{recommendProgress}</div>
+                  )}
+                </div>
+              )}
+
+              {recommendFetched && !loadingRecommend && recommendGroups.length === 0 && (
+                <div style={{ textAlign: 'center', color: '#999', fontSize: 13, padding: '16px 0' }}>
+                  おすすめ作品が見つかりませんでした。評価をもっとつけてみてください！
+                </div>
+              )}
+
+              {recommendGroups.map((group, gi) => (
+                <div key={gi} style={{ marginBottom: gi < recommendGroups.length - 1 ? 24 : 0 }}>
+                  <div style={{
+                    fontSize: 11, color: '#e05c2a', fontWeight: 700,
+                    marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6,
+                  }}>
+                    <span style={{ background: '#fff3ee', borderRadius: 4, padding: '2px 6px' }}>
+                      「{group.sourceManga}」と同じ著者 / {group.author}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {group.books.map((book, bi) => (
+                      <div key={bi} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', background: '#f9f7f5', borderRadius: 10 }}>
+                        <RecommendCover coverUrl={book.coverUrl} title={book.title} size={44} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 700, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{book.title}</div>
+                          <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>{book.author}</div>
+                        </div>
+                        <RakutenBuyButton title={book.title} affiliateUrl={book.buyUrl} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* 高評価作品 */}
+            <div style={{ background: '#fff', borderRadius: 16, padding: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+              <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>友達におすすめできる漫画</div>
               <div style={{ fontSize: 13, color: '#999', marginBottom: 16 }}>評価5をつけた作品一覧</div>
               {topRated.length === 0 ? (
                 <div style={{ textAlign: 'center', color: '#999', padding: 24 }}>
@@ -1030,20 +1487,24 @@ export default function Home() {
                   {topRated.map(m => (
                     <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', background: '#f9f7f5', borderRadius: 10 }}>
                       <MangaCover manga={m} size={44} />
-                      <div style={{ flex: 1 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontWeight: 700, fontSize: 14 }}>{m.title}</div>
                         <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
                           {m.currentVol}巻まで読了
                           {m.isSeriesComplete && ' · 完結'}
                         </div>
+                        <div style={{ marginTop: 6 }}>
+                          <StarRating rating={m.rating} />
+                        </div>
                       </div>
-                      <StarRating rating={m.rating} />
+                      <RakutenBuyButton title={m.title} affiliateUrl={m.affiliateUrl} size="small" />
                     </div>
                   ))}
                 </div>
               )}
             </div>
 
+            {/* 読みたいリスト */}
             {mangas.filter(m => m.status === 'wishlist').length > 0 && (
               <div style={{ background: '#fff', borderRadius: 16, padding: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
                 <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>📌 読みたいリスト</div>
@@ -1055,6 +1516,7 @@ export default function Home() {
                       <div style={{ flex: 1 }}>
                         <div style={{ fontWeight: 700, fontSize: 14 }}>{m.title}</div>
                       </div>
+                      <RakutenBuyButton title={m.title} size="small" />
                     </div>
                   ))}
                 </div>
