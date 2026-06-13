@@ -15,7 +15,7 @@ const FETCH_HEADERS: Record<string, string> = {
 
 function buildAffiliateUrl(itemUrl: string): string {
   if (!AFFILIATE_ID || !itemUrl) return itemUrl
-  return `https://hb.afl.rakuten.co.jp/hgc/${AFFILIATE_ID}/0/?pc=${encodeURIComponent(itemUrl)}`
+  return `https://hb.afl.rakuten.co.jp/ichiba/${AFFILIATE_ID}/?pc=${encodeURIComponent(itemUrl)}`
 }
 
 function buildParams(extra: Record<string, string>): URLSearchParams {
@@ -55,6 +55,38 @@ export async function GET(req: NextRequest) {
       }))
 
       return NextResponse.json({ found: true, books })
+    } catch (e) {
+      return NextResponse.json({ error: 'API error', detail: String(e) }, { status: 500 })
+    }
+  }
+
+  // ---- Suggest mode (autocomplete) ----
+  if (mode === 'suggest' && title) {
+    const params = buildParams({ title, hits: '30' })
+    try {
+      const response = await fetch(`${API_BASE}?${params}`, { headers: FETCH_HEADERS })
+      const data = await response.json()
+      if (!data.Items?.length) return NextResponse.json({ found: false, suggestions: [] })
+
+      const seen = new Set<string>()
+      const suggestions: Array<{ title: string; author: string; coverUrl: string; affiliateUrl: string }> = []
+
+      for (const { Item } of data.Items) {
+        const baseTitle = (Item.title as string || '')
+          .replace(/[\s　]*[（(]?第?[\d０-９]+[巻冊号]?[）)]?[\s　]*$/, '')
+          .trim() || (Item.title as string) || ''
+        if (!baseTitle || seen.has(baseTitle)) continue
+        seen.add(baseTitle)
+        suggestions.push({
+          title: baseTitle,
+          author: Item.author || '',
+          coverUrl: Item.largeImageUrl || Item.mediumImageUrl || '',
+          affiliateUrl: buildAffiliateUrl(Item.itemUrl || ''),
+        })
+        if (suggestions.length >= 5) break
+      }
+
+      return NextResponse.json({ found: true, suggestions })
     } catch (e) {
       return NextResponse.json({ error: 'API error', detail: String(e) }, { status: 500 })
     }
@@ -104,6 +136,14 @@ export async function GET(req: NextRequest) {
           if (!coverUrl) coverUrl = Item.largeImageUrl || Item.mediumImageUrl || ''
         }
       }
+    }
+
+    // 巻数が見つからない場合も最初のヒットから表紙・URLを取得
+    if (data.Items.length > 0) {
+      const first = data.Items[0].Item
+      if (!author) author = first.author || ''
+      if (!coverUrl) coverUrl = first.largeImageUrl || first.mediumImageUrl || ''
+      if (!latestItemUrl) latestItemUrl = first.itemUrl || ''
     }
 
     const today = new Date()

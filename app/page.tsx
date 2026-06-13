@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { createClient } from '@supabase/supabase-js'
 
 const supabase = createClient(
@@ -47,6 +47,13 @@ interface RecommendGroup {
   sourceManga: string
   author: string
   books: RecommendBook[]
+}
+
+interface SuggestResult {
+  title: string
+  author: string
+  coverUrl: string
+  affiliateUrl: string
 }
 
 // ---- Supabase helpers ----
@@ -862,6 +869,11 @@ export default function Home() {
   const [recommendFetched, setRecommendFetched] = useState(false)
   const [recommendProgress, setRecommendProgress] = useState('')
 
+  const [singleCandidates, setSingleCandidates] = useState<SuggestResult[]>([])
+  const [singleSearching, setSingleSearching] = useState(false)
+  const [singlePreFill, setSinglePreFill] = useState<SuggestResult | null>(null)
+  const singleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   // ---- Auth state ----
   useEffect(() => {
     // URLハッシュにアクセストークンがあるか確認（メール確認・パスワードリセット後）
@@ -1020,9 +1032,9 @@ export default function Home() {
       releaseDate: existing?.releaseDate ?? '',
       isFuture: existing?.isFuture ?? false,
       fetchedAt: existing?.fetchedAt ?? null,
-      coverUrl: existing?.coverUrl ?? '',
-      affiliateUrl: existing?.affiliateUrl ?? '',
-      author: existing?.author ?? '',
+      coverUrl: singlePreFill?.coverUrl || (existing?.coverUrl ?? ''),
+      affiliateUrl: singlePreFill?.affiliateUrl || (existing?.affiliateUrl ?? ''),
+      author: singlePreFill?.author || (existing?.author ?? ''),
     }
     await upsertToSupabase(manga, user.id)
     if (!manga.fetchedAt) {
@@ -1045,6 +1057,8 @@ export default function Home() {
     setSingleVol(1)
     setSingleRegistering(false)
     setSingleMode(false)
+    setSinglePreFill(null)
+    setSingleCandidates([])
     setTab('home')
   }
 
@@ -1152,6 +1166,29 @@ export default function Home() {
     await navigator.clipboard.writeText(prompt)
     setPromptCopied(true)
     setTimeout(() => setPromptCopied(false), 2000)
+  }
+
+  const handleSingleTitleChange = (value: string) => {
+    setSingleTitle(value)
+    setSinglePreFill(null)
+    if (singleDebounceRef.current) clearTimeout(singleDebounceRef.current)
+    if (value.length < 3) { setSingleCandidates([]); return }
+    singleDebounceRef.current = setTimeout(async () => {
+      setSingleSearching(true)
+      try {
+        const res = await fetch(`/api/rakuten?mode=suggest&title=${encodeURIComponent(value)}`)
+        const data = await res.json()
+        setSingleCandidates(data.suggestions || [])
+      } catch { setSingleCandidates([]) }
+      setSingleSearching(false)
+    }, 500)
+  }
+
+  const selectSingleCandidate = (c: SuggestResult) => {
+    setSingleTitle(c.title)
+    setSinglePreFill(c)
+    setSingleCandidates([])
+    if (singleDebounceRef.current) clearTimeout(singleDebounceRef.current)
   }
 
   const totalWorks = mangas.filter(m => m.status !== 'wishlist').length
@@ -1449,17 +1486,45 @@ export default function Home() {
               <div style={{ background: '#fff', borderRadius: 16, padding: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
                 <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16 }}>1冊ずつ登録</div>
                 <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontSize: 13, color: '#666', marginBottom: 6 }}>タイトル</div>
-                  <input
-                    value={singleTitle}
-                    onChange={e => setSingleTitle(e.target.value)}
-                    placeholder="例：キングダム"
-                    style={{
-                      width: '100%', padding: '12px 14px', borderRadius: 10,
-                      border: '1px solid #e8e4df', fontSize: 14, outline: 'none',
-                      boxSizing: 'border-box', color: '#1a1a1a', background: '#fff',
-                    }}
-                  />
+                  <div style={{ fontSize: 13, color: '#666', marginBottom: 6 }}>
+                    タイトル <span style={{ fontSize: 11, color: '#aaa', fontWeight: 400 }}>（3文字以上で候補を表示）</span>
+                  </div>
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      value={singleTitle}
+                      onChange={e => handleSingleTitleChange(e.target.value)}
+                      onBlur={() => setTimeout(() => setSingleCandidates([]), 150)}
+                      placeholder="例：キングダム"
+                      style={{
+                        width: '100%', padding: '12px 14px', borderRadius: 10,
+                        border: '1px solid #e8e4df', fontSize: 14, outline: 'none',
+                        boxSizing: 'border-box', color: '#1a1a1a', background: '#fff',
+                      }}
+                    />
+                    {singleSearching && (
+                      <div style={{ position: 'absolute', right: 14, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: '#aaa', pointerEvents: 'none' }}>検索中...</div>
+                    )}
+                    {singleCandidates.length > 0 && (
+                      <div style={{ position: 'absolute', zIndex: 200, width: '100%', background: '#fff', borderRadius: 12, boxShadow: '0 4px 20px rgba(0,0,0,0.12)', border: '1px solid #e8e4df', overflow: 'hidden', top: 'calc(100% + 4px)', left: 0 }}>
+                        {singleCandidates.map((c, i) => (
+                          <div
+                            key={i}
+                            onMouseDown={() => selectSingleCandidate(c)}
+                            style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', cursor: 'pointer', borderTop: i > 0 ? '1px solid #f5f2ee' : 'none' }}
+                          >
+                            {c.coverUrl
+                              ? <img src={c.coverUrl} alt={c.title} style={{ width: 34, height: 48, objectFit: 'cover', borderRadius: 4, flexShrink: 0 }} />
+                              : <div style={{ width: 34, height: 48, background: stringToColor(c.title), borderRadius: 4, flexShrink: 0 }} />
+                            }
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 14, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.title}</div>
+                              <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>{c.author}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div style={{ marginBottom: 20 }}>
                   <div style={{ fontSize: 13, color: '#666', marginBottom: 6 }}>読んだ巻数</div>
