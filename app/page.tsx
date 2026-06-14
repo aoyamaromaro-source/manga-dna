@@ -387,6 +387,36 @@ function EditMangaModal({ manga, onSave, onClose }: {
   const [status, setStatus] = useState<Status>(manga.status)
   const [isSeriesComplete, setIsSeriesComplete] = useState(manga.isSeriesComplete)
   const [star, setStar] = useState(manga.star)
+  const [author, setAuthor] = useState(manga.author)
+  const [coverUrl, setCoverUrl] = useState(manga.coverUrl)
+  const [affiliateUrl, setAffiliateUrl] = useState(manga.affiliateUrl)
+  const [candidates, setCandidates] = useState<SuggestResult[]>([])
+  const [searching, setSearching] = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleTitleChange = (value: string) => {
+    setTitle(value)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    if (value.length < 3) { setCandidates([]); return }
+    debounceRef.current = setTimeout(async () => {
+      setSearching(true)
+      try {
+        const res = await fetch(`/api/rakuten?mode=suggest&title=${encodeURIComponent(value)}`)
+        const data = await res.json()
+        setCandidates(data.suggestions || [])
+      } catch { setCandidates([]) }
+      setSearching(false)
+    }, 500)
+  }
+
+  const selectCandidate = (c: SuggestResult) => {
+    setTitle(c.title)
+    setAuthor(c.author)
+    setCoverUrl(c.coverUrl)
+    setAffiliateUrl(c.affiliateUrl)
+    setCandidates([])
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+  }
 
   const inputStyle = {
     width: '100%', padding: '10px 14px', borderRadius: 10,
@@ -413,7 +443,37 @@ function EditMangaModal({ manga, onSave, onClose }: {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div>
             <div style={{ fontSize: 12, color: '#666', fontWeight: 600, marginBottom: 6 }}>タイトル</div>
-            <input value={title} onChange={e => setTitle(e.target.value)} style={inputStyle} />
+            <div style={{ position: 'relative' }}>
+              <input
+                value={title}
+                onChange={e => handleTitleChange(e.target.value)}
+                onBlur={() => setTimeout(() => setCandidates([]), 150)}
+                style={inputStyle}
+              />
+              {searching && (
+                <div style={{ position: 'absolute', right: 14, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: '#aaa', pointerEvents: 'none' }}>検索中...</div>
+              )}
+              {candidates.length > 0 && (
+                <div style={{ position: 'absolute', zIndex: 200, width: '100%', background: '#fff', borderRadius: 12, boxShadow: '0 4px 20px rgba(0,0,0,0.12)', border: '1px solid #e8e4df', overflow: 'hidden', top: 'calc(100% + 4px)', left: 0 }}>
+                  {candidates.map((c, i) => (
+                    <div
+                      key={i}
+                      onMouseDown={() => selectCandidate(c)}
+                      style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', cursor: 'pointer', borderTop: i > 0 ? '1px solid #f5f2ee' : 'none' }}
+                    >
+                      {c.coverUrl
+                        ? <img src={c.coverUrl} alt={c.title} style={{ width: 34, height: 48, objectFit: 'cover', borderRadius: 4, flexShrink: 0 }} />
+                        : <div style={{ width: 34, height: 48, background: stringToColor(c.title), borderRadius: 4, flexShrink: 0 }} />
+                      }
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.title}</div>
+                        <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>{c.author}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
           <div>
             <div style={{ fontSize: 12, color: '#666', fontWeight: 600, marginBottom: 8 }}>読んだ巻数</div>
@@ -439,7 +499,7 @@ function EditMangaModal({ manga, onSave, onClose }: {
               ★ お気に入り {star ? '✓' : ''}
             </button>
           </div>
-          <button onClick={() => onSave({ ...manga, title, currentVol, status, isSeriesComplete, star })} style={{ width: '100%', padding: '14px', borderRadius: 24, border: 'none', background: '#e05c2a', color: '#fff', fontSize: 15, fontWeight: 700, cursor: 'pointer', marginTop: 4 }}>
+          <button onClick={() => onSave({ ...manga, title, currentVol, status, isSeriesComplete, star, author, coverUrl, affiliateUrl })} style={{ width: '100%', padding: '14px', borderRadius: 24, border: 'none', background: '#e05c2a', color: '#fff', fontSize: 15, fontWeight: 700, cursor: 'pointer', marginTop: 4 }}>
             保存する
           </button>
         </div>
