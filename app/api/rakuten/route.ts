@@ -62,36 +62,31 @@ export async function GET(req: NextRequest) {
 
   // ---- Suggest mode (autocomplete) ----
   if (mode === 'suggest' && title) {
-    const doSearch = async (params: URLSearchParams) => {
-      const res = await fetch(`${API_BASE}?${params}`, { headers: FETCH_HEADERS })
-      return res.json()
-    }
-    const extractSuggestions = (data: any): Array<{ title: string; author: string; coverUrl: string; affiliateUrl: string }> => {
+    try {
+      const params = buildParams({ title })
+      const response = await fetch(`${API_BASE}?${params}`, { headers: FETCH_HEADERS })
+      const data = await response.json()
+
+      if (!data.Items?.length) return NextResponse.json({ found: false, suggestions: [] })
+
       const seen = new Set<string>()
-      const result: Array<{ title: string; author: string; coverUrl: string; affiliateUrl: string }> = []
-      for (const { Item } of (data.Items || [])) {
+      const suggestions: Array<{ title: string; author: string; coverUrl: string; affiliateUrl: string }> = []
+
+      for (const { Item } of data.Items) {
         const baseTitle = (Item.title as string || '')
           .replace(/[\s　]*[（(]?第?[\d０-９]+[巻冊号]?[）)]?[\s　]*$/, '')
           .trim() || (Item.title as string) || ''
         if (!baseTitle || seen.has(baseTitle)) continue
         seen.add(baseTitle)
-        result.push({
+        suggestions.push({
           title: baseTitle,
           author: Item.author || '',
           coverUrl: Item.largeImageUrl || Item.mediumImageUrl || '',
           affiliateUrl: buildAffiliateUrl(Item.itemUrl || ''),
         })
-        if (result.length >= 5) break
+        if (suggestions.length >= 5) break
       }
-      return result
-    }
-    try {
-      let data = await doSearch(buildParams({ title, hits: '30' }))
-      // カタカナ入力で英語タイトルが見つからない場合、keyword検索で再試行
-      if (!data.Items?.length) {
-        data = await doSearch(buildParams({ keyword: title, hits: '30' }))
-      }
-      const suggestions = extractSuggestions(data)
+
       return NextResponse.json({ found: suggestions.length > 0, suggestions })
     } catch (e) {
       return NextResponse.json({ error: 'API error', detail: String(e) }, { status: 500 })
