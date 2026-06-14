@@ -920,7 +920,7 @@ export default function Home() {
 
   const [singleTitle, setSingleTitle] = useState('')
   const [singleVol, setSingleVol] = useState(1)
-  const [singleMode, setSingleMode] = useState(false)
+  const [registerMode, setRegisterMode] = useState<'bulk' | 'single' | 'search'>('bulk')
   const [singleRegistering, setSingleRegistering] = useState(false)
 
   // Recommend state
@@ -933,6 +933,14 @@ export default function Home() {
   const [singleSearching, setSingleSearching] = useState(false)
   const [singlePreFill, setSinglePreFill] = useState<SuggestResult | null>(null)
   const singleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const [registerSearchQuery, setRegisterSearchQuery] = useState('')
+  const [registerSearchResults, setRegisterSearchResults] = useState<Array<{ title: string; author: string; coverUrl: string; latestVol: number | null; affiliateUrl: string }>>([])
+  const [registerSearching, setRegisterSearching] = useState(false)
+  const [registerSearchDone, setRegisterSearchDone] = useState(false)
+  const [selectedSearchManga, setSelectedSearchManga] = useState<{ title: string; author: string; coverUrl: string; latestVol: number | null; affiliateUrl: string } | null>(null)
+  const [searchRegisterVol, setSearchRegisterVol] = useState(1)
+  const [searchRegistering, setSearchRegistering] = useState(false)
 
   // ---- Auth state ----
   useEffect(() => {
@@ -1116,7 +1124,7 @@ export default function Home() {
     setSingleTitle('')
     setSingleVol(1)
     setSingleRegistering(false)
-    setSingleMode(false)
+    setRegisterMode('bulk')
     setSinglePreFill(null)
     setSingleCandidates([])
     setTab('home')
@@ -1249,6 +1257,50 @@ export default function Home() {
     setSinglePreFill(c)
     setSingleCandidates([])
     if (singleDebounceRef.current) clearTimeout(singleDebounceRef.current)
+  }
+
+  const handleRegisterSearch = async () => {
+    if (!registerSearchQuery.trim()) return
+    setRegisterSearching(true)
+    setRegisterSearchDone(false)
+    setRegisterSearchResults([])
+    try {
+      const res = await fetch(`/api/rakuten?mode=search&title=${encodeURIComponent(registerSearchQuery.trim())}`)
+      const data = await res.json()
+      setRegisterSearchResults(data.results || [])
+      setRegisterSearchDone(true)
+    } catch { setRegisterSearchResults([]); setRegisterSearchDone(true) }
+    setRegisterSearching(false)
+  }
+
+  const handleSearchRegister = async () => {
+    if (!selectedSearchManga || !user || searchRegistering) return
+    setSearchRegistering(true)
+    const id = `${Date.now()}_search`
+    const manga: Manga = {
+      id,
+      title: selectedSearchManga.title,
+      currentVol: searchRegisterVol,
+      maxVol: null,
+      isSeriesComplete: false,
+      status: 'reading',
+      isMidVolume: false,
+      star: false,
+      rating: 0,
+      registeredAt: Date.now(),
+      latestVol: selectedSearchManga.latestVol,
+      releaseDate: '',
+      isFuture: false,
+      fetchedAt: Date.now(),
+      coverUrl: selectedSearchManga.coverUrl,
+      affiliateUrl: selectedSearchManga.affiliateUrl,
+      author: selectedSearchManga.author,
+    }
+    await upsertToSupabase(manga, user.id)
+    setMangas(prev => [manga, ...prev])
+    setSelectedSearchManga(null)
+    setSearchRegistering(false)
+    setTab('home')
   }
 
   const totalWorks = mangas.filter(m => m.status !== 'wishlist').length
@@ -1494,12 +1546,13 @@ export default function Home() {
         {/* ===== REGISTER ===== */}
         {tab === 'register' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={() => setSingleMode(false)} style={{ flex: 1, padding: '10px', borderRadius: 12, border: 'none', background: !singleMode ? '#1a1a1a' : '#f0f0f0', color: !singleMode ? '#fff' : '#666', fontWeight: 700, cursor: 'pointer', fontSize: 13 }}>一括登録</button>
-              <button onClick={() => setSingleMode(true)} style={{ flex: 1, padding: '10px', borderRadius: 12, border: 'none', background: singleMode ? '#1a1a1a' : '#f0f0f0', color: singleMode ? '#fff' : '#666', fontWeight: 700, cursor: 'pointer', fontSize: 13 }}>1冊ずつ登録</button>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button onClick={() => setRegisterMode('bulk')} style={{ flex: 1, padding: '10px 4px', borderRadius: 12, border: 'none', background: registerMode === 'bulk' ? '#1a1a1a' : '#f0f0f0', color: registerMode === 'bulk' ? '#fff' : '#666', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>一括登録</button>
+              <button onClick={() => setRegisterMode('single')} style={{ flex: 1, padding: '10px 4px', borderRadius: 12, border: 'none', background: registerMode === 'single' ? '#1a1a1a' : '#f0f0f0', color: registerMode === 'single' ? '#fff' : '#666', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>1冊ずつ</button>
+              <button onClick={() => setRegisterMode('search')} style={{ flex: 1, padding: '10px 4px', borderRadius: 12, border: 'none', background: registerMode === 'search' ? '#1a1a1a' : '#f0f0f0', color: registerMode === 'search' ? '#fff' : '#666', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>検索して登録</button>
             </div>
 
-            {!singleMode ? (
+            {registerMode === 'bulk' ? (
               <div style={{ background: '#fff', borderRadius: 16, padding: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
                 <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>メモから一括登録</div>
                 <div style={{ fontSize: 13, color: '#999', marginBottom: 14 }}>「・キングダム 76★」のような形式で貼り付けてください</div>
@@ -1542,7 +1595,7 @@ export default function Home() {
                   </div>
                 )}
               </div>
-            ) : (
+            ) : registerMode === 'single' ? (
               <div style={{ background: '#fff', borderRadius: 16, padding: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
                 <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16 }}>1冊ずつ登録</div>
                 <div style={{ marginBottom: 12 }}>
@@ -1618,6 +1671,91 @@ export default function Home() {
                   }} disabled={!singleTitle.trim()} style={{ width: '100%', padding: '12px', borderRadius: 24, border: '1px solid #2d6a9f', background: '#fff', color: '#2d6a9f', fontSize: 14, fontWeight: 700, cursor: singleTitle.trim() ? 'pointer' : 'default', opacity: singleTitle.trim() ? 1 : 0.5 }}>
                     📌 読みたいリストに追加
                   </button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ background: '#fff', borderRadius: 16, padding: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+                <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>漫画を検索して登録</div>
+                <div style={{ fontSize: 13, color: '#999', marginBottom: 14 }}>タイトルで検索して本棚に追加できます</div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+                  <input
+                    value={registerSearchQuery}
+                    onChange={e => setRegisterSearchQuery(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') handleRegisterSearch() }}
+                    placeholder="タイトルを入力..."
+                    style={{ flex: 1, padding: '12px 14px', borderRadius: 10, border: '1px solid #e8e4df', fontSize: 14, outline: 'none', color: '#1a1a1a', background: '#fff', boxSizing: 'border-box' }}
+                  />
+                  <button
+                    onClick={handleRegisterSearch}
+                    disabled={!registerSearchQuery.trim() || registerSearching}
+                    style={{ padding: '12px 16px', borderRadius: 10, border: 'none', background: registerSearchQuery.trim() ? '#1a1a1a' : '#e0e0e0', color: registerSearchQuery.trim() ? '#fff' : '#999', fontWeight: 700, cursor: registerSearchQuery.trim() ? 'pointer' : 'default', fontSize: 14, whiteSpace: 'nowrap' }}
+                  >
+                    {registerSearching ? '検索中' : '検索'}
+                  </button>
+                </div>
+
+                {registerSearching && (
+                  <div style={{ textAlign: 'center', padding: '24px 0', color: '#999', fontSize: 13 }}>検索中...</div>
+                )}
+
+                {registerSearchDone && registerSearchResults.length === 0 && !registerSearching && (
+                  <div style={{ textAlign: 'center', padding: '32px 0', color: '#999', fontSize: 13 }}>
+                    見つかりませんでした。別のキーワードで試してください
+                  </div>
+                )}
+
+                {registerSearchResults.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {registerSearchResults.map((r, i) => (
+                      <div
+                        key={i}
+                        onClick={() => { setSelectedSearchManga(r); setSearchRegisterVol(r.latestVol || 1) }}
+                        style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, background: '#f9f7f5', borderRadius: 12, cursor: 'pointer' }}
+                      >
+                        {r.coverUrl
+                          ? <img src={r.coverUrl} alt={r.title} style={{ width: 46, height: 66, objectFit: 'cover', borderRadius: 6, flexShrink: 0 }} />
+                          : <div style={{ width: 46, height: 66, background: stringToColor(r.title), borderRadius: 6, flexShrink: 0 }} />
+                        }
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 700, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.title}</div>
+                          <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>{r.author}</div>
+                          {r.latestVol && <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>既刊 {r.latestVol}巻</div>}
+                        </div>
+                        <div style={{ fontSize: 20, color: '#ccc', flexShrink: 0 }}>›</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {selectedSearchManga && (
+              <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+                <div style={{ background: '#fff', borderRadius: '20px 20px 0 0', padding: 24, width: '100%', maxWidth: 640, boxSizing: 'border-box' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+                    {selectedSearchManga.coverUrl
+                      ? <img src={selectedSearchManga.coverUrl} alt={selectedSearchManga.title} style={{ width: 48, height: 68, objectFit: 'cover', borderRadius: 6, flexShrink: 0 }} />
+                      : <div style={{ width: 48, height: 68, background: stringToColor(selectedSearchManga.title), borderRadius: 6, flexShrink: 0 }} />
+                    }
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: 16, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selectedSearchManga.title}</div>
+                      <div style={{ fontSize: 13, color: '#999' }}>{selectedSearchManga.author}</div>
+                    </div>
+                  </div>
+                  <div style={{ marginBottom: 20 }}>
+                    <div style={{ fontSize: 13, color: '#666', marginBottom: 10 }}>読んだ巻数</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                      <button onClick={() => setSearchRegisterVol(v => Math.max(0, v - 1))} style={{ width: 44, height: 44, borderRadius: '50%', border: '1px solid #e8e4df', background: '#fff', cursor: 'pointer', fontSize: 24, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
+                      <span style={{ fontSize: 28, fontWeight: 900, minWidth: 60, textAlign: 'center' }}>{searchRegisterVol}巻</span>
+                      <button onClick={() => setSearchRegisterVol(v => v + 1)} style={{ width: 44, height: 44, borderRadius: '50%', border: '1px solid #e8e4df', background: '#fff', cursor: 'pointer', fontSize: 24, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>＋</button>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button onClick={() => setSelectedSearchManga(null)} style={{ flex: 1, padding: '12px', borderRadius: 24, border: '1px solid #e8e4df', background: '#fff', color: '#666', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>キャンセル</button>
+                    <button onClick={handleSearchRegister} disabled={searchRegistering} style={{ flex: 2, padding: '12px', borderRadius: 24, border: 'none', background: '#e05c2a', color: '#fff', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
+                      {searchRegistering ? '登録中...' : '本棚に追加する'}
+                    </button>
+                  </div>
                 </div>
               </div>
             )}

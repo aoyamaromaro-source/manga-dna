@@ -13,6 +13,29 @@ const FETCH_HEADERS: Record<string, string> = {
   'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
 }
 
+const KATAKANA_TO_ENGLISH: Record<string, string> = {
+  'ブルージャイアント': 'BLUE GIANT',
+  'ワンピース': 'ONE PIECE',
+  'ナルト': 'NARUTO',
+  'ドラゴンボール': 'DRAGON BALL',
+  'ブリーチ': 'BLEACH',
+  'デスノート': 'DEATH NOTE',
+  'フェアリーテイル': 'FAIRY TAIL',
+  'ハンターハンター': 'HUNTER×HUNTER',
+  'バガボンド': 'VAGABOND',
+  'ガンツ': 'GANTZ',
+  'ベルセルク': 'BERSERK',
+  'バクマン': 'BAKUMAN',
+  'ビンランドサガ': 'VINLAND SAGA',
+  'ブラッククローバー': 'BLACK CLOVER',
+  'ブラックラグーン': 'BLACK LAGOON',
+  'ソウルイーター': 'SOUL EATER',
+  'フルメタルアルケミスト': 'FULLMETAL ALCHEMIST',
+  'アイシールド21': 'EYESHIELD 21',
+  'ブルーエクソシスト': 'BLUE EXORCIST',
+  'ファイアパンチ': 'FIRE PUNCH',
+}
+
 function buildAffiliateUrl(itemUrl: string): string {
   if (!AFFILIATE_ID || !itemUrl) return itemUrl
   return `https://hb.afl.rakuten.co.jp/ichiba/${AFFILIATE_ID}/?pc=${encodeURIComponent(itemUrl)}`
@@ -88,6 +111,64 @@ export async function GET(req: NextRequest) {
       }
 
       return NextResponse.json({ found: suggestions.length > 0, suggestions })
+    } catch (e) {
+      return NextResponse.json({ error: 'API error', detail: String(e) }, { status: 500 })
+    }
+  }
+
+  // ---- Search mode (search screen - returns grouped result cards) ----
+  if (mode === 'search' && title) {
+    const englishTitle = KATAKANA_TO_ENGLISH[title] || null
+
+    const searchRakuten = async (searchTitle: string) => {
+      const params = buildParams({ title: searchTitle, hits: '10' })
+      const response = await fetch(`${API_BASE}?${params}`, { headers: FETCH_HEADERS })
+      const data = await response.json()
+      return data.Items || []
+    }
+
+    try {
+      let items = await searchRakuten(title)
+      if (englishTitle) {
+        const enItems = await searchRakuten(englishTitle)
+        items = [...items, ...enItems]
+      }
+
+      if (!items.length) return NextResponse.json({ found: false, results: [] })
+
+      const seen = new Map<string, { title: string; author: string; coverUrl: string; latestVol: number | null; affiliateUrl: string }>()
+
+      for (const { Item } of items) {
+        const baseTitle = (Item.title as string || '')
+          .replace(/[\s　]*[（(]?第?[\d０-９]+[巻冊号]?[）)]?[\s　]*$/, '')
+          .trim() || (Item.title as string) || ''
+        if (!baseTitle) continue
+
+        const volMatch = (Item.title as string)?.match(/(\d+)/)
+        const vol = volMatch ? parseInt(volMatch[1]) : null
+
+        if (!seen.has(baseTitle)) {
+          seen.set(baseTitle, {
+            title: baseTitle,
+            author: Item.author || '',
+            coverUrl: Item.largeImageUrl || Item.mediumImageUrl || '',
+            latestVol: vol,
+            affiliateUrl: buildAffiliateUrl(Item.itemUrl || ''),
+          })
+        } else {
+          const existing = seen.get(baseTitle)!
+          if (vol && (!existing.latestVol || vol > existing.latestVol)) {
+            existing.latestVol = vol
+            existing.affiliateUrl = buildAffiliateUrl(Item.itemUrl || '')
+          }
+          if (!existing.coverUrl) {
+            existing.coverUrl = Item.largeImageUrl || Item.mediumImageUrl || ''
+          }
+        }
+      }
+
+      const results = Array.from(seen.values()).slice(0, 10)
+      return NextResponse.json({ found: results.length > 0, results })
     } catch (e) {
       return NextResponse.json({ error: 'API error', detail: String(e) }, { status: 500 })
     }
