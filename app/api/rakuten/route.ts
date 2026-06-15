@@ -5,6 +5,7 @@ const ACCESS_KEY = process.env.RAKUTEN_ACCESS_KEY || ''
 const AFFILIATE_ID = process.env.NEXT_PUBLIC_RAKUTEN_AFFILIATE_ID || ''
 
 const API_BASE = 'https://openapi.rakuten.co.jp/services/api/BooksBook/Search/20170404'
+const API_TOTAL = 'https://openapi.rakuten.co.jp/services/api/BooksTotal/Search/20170404'
 const SITE_URL = process.env.RAKUTEN_REFERRER_URL || 'https://gleaming-jelly-a83f4c.netlify.app'
 
 const FETCH_HEADERS: Record<string, string> = {
@@ -95,9 +96,9 @@ function itemMatchesQuery(itemTitle: string, query: string): boolean {
 }
 
 // 生 fetch（Items 配列を返す）
-async function doFetch(params: URLSearchParams): Promise<any[]> {
+async function doFetch(params: URLSearchParams, base = API_BASE): Promise<any[]> {
   try {
-    const r = await fetch(`${API_BASE}?${params}`, { headers: FETCH_HEADERS })
+    const r = await fetch(`${base}?${params}`, { headers: FETCH_HEADERS })
     const d = await r.json()
     return d.Items || []
   } catch { return [] }
@@ -134,6 +135,13 @@ async function searchWithFallback(
   // 4. keyword + ジャンルなし（フィルタ）
   if (!skipNoGenre) {
     items = await doFetch(buildParamsNoGenre({ keyword: query, hits }))
+    filtered = items.filter(({ Item }: any) => itemMatchesQuery(Item.title || '', query))
+    if (filtered.length) return filtered
+
+    // 5. BooksTotal（デジタル・絶版含む広域検索）フィルタ
+    const totalParams = new URLSearchParams({ applicationId: APP_ID, hits, format: 'json', keyword: query })
+    if (ACCESS_KEY) totalParams.set('accessKey', ACCESS_KEY)
+    items = await doFetch(totalParams, API_TOTAL)
     filtered = items.filter(({ Item }: any) => itemMatchesQuery(Item.title || '', query))
     return filtered
   }
