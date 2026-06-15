@@ -36,11 +36,14 @@ const KATAKANA_TO_ENGLISH: Record<string, string> = {
   'ファイアパンチ': 'FIRE PUNCH',
 }
 
+// --- ヘルパー ---
+
 function buildAffiliateUrl(itemUrl: string): string {
   if (!AFFILIATE_ID || !itemUrl) return itemUrl
   return `https://hb.afl.rakuten.co.jp/ichiba/${AFFILIATE_ID}/?pc=${encodeURIComponent(itemUrl)}`
 }
 
+// コミックジャンル付き
 function buildParams(extra: Record<string, string>): URLSearchParams {
   const params = new URLSearchParams({
     applicationId: APP_ID,
@@ -51,6 +54,98 @@ function buildParams(extra: Record<string, string>): URLSearchParams {
   })
   if (ACCESS_KEY) params.set('accessKey', ACCESS_KEY)
   return params
+}
+
+// ジャンル指定なし（フォールバック用）
+function buildParamsNoGenre(extra: Record<string, string>): URLSearchParams {
+  const params = new URLSearchParams({
+    applicationId: APP_ID,
+    hits: '10',
+    format: 'json',
+    ...extra,
+  })
+  if (ACCESS_KEY) params.set('accessKey', ACCESS_KEY)
+  return params
+}
+
+// 算用数字→漢数字（「4月」→「四月」等）
+function toKanjiNumerals(s: string): string {
+  const map: Record<string, string> = {
+    '0': '〇', '1': '一', '2': '二', '3': '三', '4': '四',
+    '5': '五', '6': '六', '7': '七', '8': '八', '9': '九',
+  }
+  return s.replace(/[0-9]/g, d => map[d])
+}
+
+// 記号・スペースを除いた正規化
+function stripForMatch(s: string): string {
+  return s.replace(/[\s　\-－・（）\(\)「」『』【】♡♥★☆!！?？]/g, '')
+}
+
+// keyword フォールバック結果がクエリに関連するか判定（誤ヒット排除）
+function itemMatchesQuery(itemTitle: string, query: string): boolean {
+  const a = stripForMatch(itemTitle)
+  const q = stripForMatch(query)
+  if (q.length === 0) return false
+  // クエリの文字列が item タイトルに部分一致すれば OK
+  if (a.includes(q)) return true
+  // 4文字以上のクエリは前半4文字が含まれるか
+  if (q.length >= 4 && a.includes(q.substring(0, 4))) return true
+  return false
+}
+
+// 生 fetch（Items 配列を返す）
+async function doFetch(params: URLSearchParams): Promise<any[]> {
+  try {
+    const r = await fetch(`${API_BASE}?${params}`, { headers: FETCH_HEADERS })
+    const d = await r.json()
+    return d.Items || []
+  } catch { return [] }
+}
+
+/**
+ * 複数戦略フォールバック検索
+ * 1. title + genre
+ * 2. 漢数字変換 title + genre
+ * 3. keyword + genre（関連フィルタ付き）
+ * 4. keyword + ジャンルなし（関連フィルタ付き）← suggest モードでは省略
+ */
+async function searchWithFallback(
+  query: string,
+  hits = '10',
+  skipNoGenre = false,
+): Promise<any[]> {
+  // 1. title + genre
+  let items = await doFetch(buildParams({ title: query, hits }))
+  if (items.length) return items
+
+  // 2. 漢数字変換
+  const kanjiQuery = toKanjiNumerals(query)
+  if (kanjiQuery !== query) {
+    items = await doFetch(buildParams({ title: kanjiQuery, hits }))
+    if (items.length) return items
+  }
+
+  // 3. keyword + genre（フィルタ）
+  items = await doFetch(buildParams({ keyword: query, hits }))
+  let filtered = items.filter(({ Item }: any) => itemMatchesQuery(Item.title || '', query))
+  if (filtered.length) return filtered
+
+  // 4. keyword + ジャンルなし（フィルタ）
+  if (!skipNoGenre) {
+    items = await doFetch(buildParamsNoGenre({ keyword: query, hits }))
+    filtered = items.filter(({ Item }: any) => itemMatchesQuery(Item.title || '', query))
+    return filtered
+  }
+
+  return []
+}
+
+// 巻タイトル末尾の巻数表記を除去
+function stripVolumeSuffix(title: string): string {
+  return (title || '')
+    .replace(/[\s　]*[（(]?第?[\d０-９]+[巻冊号]?[）)]?[\s　]*$/, '')
+    .trim() || title || ''
 }
 
 export async function GET(req: NextRequest) {
@@ -86,19 +181,16 @@ export async function GET(req: NextRequest) {
   // ---- Suggest mode (autocomplete) ----
   if (mode === 'suggest' && title) {
     try {
-      const params = buildParams({ title })
-      const response = await fetch(`${API_BASE}?${params}`, { headers: FETCH_HEADERS })
-      const data = await response.json()
+      // suggest は速度重視 → skipNoGenre=true で3段階まで
+      const items = await searchWithFallback(title, '10', true)
 
-      if (!data.Items?.length) return NextResponse.json({ found: false, suggestions: [] })
+      if (!items.length) return NextResponse.json({ found: false, suggestions: [] })
 
       const seen = new Set<string>()
       const suggestions: Array<{ title: string; author: string; coverUrl: string; affiliateUrl: string }> = []
 
-      for (const { Item } of data.Items) {
-        const baseTitle = (Item.title as string || '')
-          .replace(/[\s　]*[（(]?第?[\d０-９]+[巻冊号]?[）)]?[\s　]*$/, '')
-          .trim() || (Item.title as string) || ''
+      for (const { Item } of items) {
+        const baseTitle = stripVolumeSuffix(Item.title)
         if (!baseTitle || seen.has(baseTitle)) continue
         seen.add(baseTitle)
         suggestions.push({
@@ -120,28 +212,20 @@ export async function GET(req: NextRequest) {
   if (mode === 'search' && title) {
     const englishTitle = KATAKANA_TO_ENGLISH[title] || null
 
-    const searchRakuten = async (searchTitle: string) => {
-      const params = buildParams({ title: searchTitle, hits: '10' })
-      const response = await fetch(`${API_BASE}?${params}`, { headers: FETCH_HEADERS })
-      const data = await response.json()
-      return data.Items || []
-    }
-
     try {
-      let items = await searchRakuten(title)
-      if (englishTitle) {
-        const enItems = await searchRakuten(englishTitle)
-        items = [...items, ...enItems]
-      }
+      // メインクエリ + カタカナ→英語変換も並列で検索
+      const [mainItems, enItems] = await Promise.all([
+        searchWithFallback(title, '10'),
+        englishTitle ? searchWithFallback(englishTitle, '10') : Promise.resolve([]),
+      ])
+      const items = [...mainItems, ...enItems]
 
       if (!items.length) return NextResponse.json({ found: false, results: [] })
 
       const seen = new Map<string, { title: string; author: string; coverUrl: string; latestVol: number | null; affiliateUrl: string }>()
 
       for (const { Item } of items) {
-        const baseTitle = (Item.title as string || '')
-          .replace(/[\s　]*[（(]?第?[\d０-９]+[巻冊号]?[）)]?[\s　]*$/, '')
-          .trim() || (Item.title as string) || ''
+        const baseTitle = stripVolumeSuffix(Item.title)
         if (!baseTitle) continue
 
         const volMatch = (Item.title as string)?.match(/(\d+)/)
@@ -174,19 +258,16 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // ---- Title search mode ----
+  // ---- Title search mode (shelf refresh / single register) ----
   if (!title) {
     return NextResponse.json({ error: 'title is required' }, { status: 400 })
   }
 
-  const params = buildParams({ title })
-
   try {
-    const response = await fetch(`${API_BASE}?${params}`, { headers: FETCH_HEADERS })
-    const data = await response.json()
+    const items = await searchWithFallback(title, '10')
 
-    if (!data.Items?.length) {
-      return NextResponse.json({ found: false, debug: data })
+    if (!items.length) {
+      return NextResponse.json({ found: false })
     }
 
     let latestVol = 0
@@ -196,7 +277,7 @@ export async function GET(req: NextRequest) {
     let latestItemUrl = ''
 
     // 1巻の表紙を優先取得
-    for (const { Item } of data.Items) {
+    for (const { Item } of items) {
       if (!author && Item.author) author = Item.author
       const volMatch = Item.title?.match(/(\d+)/)
       if (volMatch && parseInt(volMatch[1]) === 1) {
@@ -206,7 +287,7 @@ export async function GET(req: NextRequest) {
     }
 
     // 最新巻を探す
-    for (const { Item } of data.Items) {
+    for (const { Item } of items) {
       if (!author && Item.author) author = Item.author
       const volMatch = Item.title?.match(/(\d+)/)
       if (volMatch) {
@@ -220,9 +301,9 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // 巻数が見つからない場合も最初のヒットから表紙・URLを取得
-    if (data.Items.length > 0) {
-      const first = data.Items[0].Item
+    // 巻数が見つからない場合も最初のヒットから
+    if (items.length > 0) {
+      const first = items[0].Item
       if (!author) author = first.author || ''
       if (!coverUrl) coverUrl = first.largeImageUrl || first.mediumImageUrl || ''
       if (!latestItemUrl) latestItemUrl = first.itemUrl || ''
