@@ -226,15 +226,45 @@ function getMangaPersonality(mangas: Manga[]): { title: string; desc: string; ta
 
 const RAKUTEN_AFFILIATE_ID = "54dd456c.699422ca.54dd456d.4bf7e5c6"
 
-// 著者で検索してシリーズをユニーク化して返す
-async function fetchAuthorRecommends(author: string, shelfTitles: string[]): Promise<RecommendBook[]> {
+function shuffleArray<T>(arr: T[]): T[] {
+  const a = [...arr]
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[a[i], a[j]] = [a[j], a[i]]
+  }
+  return a
+}
+
+const RECOMMEND_SHOWN_KEY = 'mangadna_recommend_shown'
+
+function getShownRecommendTitles(userId: string): Set<string> {
+  if (typeof window === 'undefined') return new Set()
+  try {
+    const raw = localStorage.getItem(`${RECOMMEND_SHOWN_KEY}_${userId}`)
+    return new Set(raw ? JSON.parse(raw) : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function addShownRecommendTitles(userId: string, titles: string[]) {
+  if (typeof window === 'undefined') return
+  try {
+    const existing = getShownRecommendTitles(userId)
+    titles.forEach(t => existing.add(t))
+    localStorage.setItem(`${RECOMMEND_SHOWN_KEY}_${userId}`, JSON.stringify([...existing]))
+  } catch {}
+}
+
+// 著者で検索してシリーズをユニーク化して返す（まだ提示していない作品を優先しつつランダムに選ぶ）
+async function fetchAuthorRecommends(author: string, shelfTitles: string[], shownTitles: Set<string>): Promise<RecommendBook[]> {
   try {
     const res = await fetch(`/api/rakuten?mode=author&author=${encodeURIComponent(author)}`)
     const data = await res.json()
     if (!data.found || !data.books) return []
 
     const seen = new Set<string>()
-    const result: RecommendBook[] = []
+    const candidates: RecommendBook[] = []
 
     for (const book of data.books) {
       // 巻数を除いたシリーズ名
@@ -250,16 +280,18 @@ async function fetchAuthorRecommends(author: string, shelfTitles: string[]): Pro
       if (isOnShelf) continue
 
       seen.add(baseTitle)
-      result.push({
+      candidates.push({
         title: baseTitle,
         author: book.author,
         coverUrl: book.coverUrl,
         buyUrl: book.affiliateUrl || `https://search.books.rakuten.co.jp/booksearch/?keyword=${encodeURIComponent(baseTitle)}`,
       })
-
-      if (result.length >= 5) break
     }
-    return result
+
+    // まだ提示していない作品を優先し、足りない分は既出作品からランダムに補う
+    const unseen = shuffleArray(candidates.filter(c => !shownTitles.has(c.title)))
+    const alreadyShown = shuffleArray(candidates.filter(c => shownTitles.has(c.title)))
+    return [...unseen, ...alreadyShown].slice(0, 5)
   } catch {
     return []
   }
@@ -377,10 +409,11 @@ function RakutenBuyButton({ title, affiliateUrl, size = 'normal' }: { title: str
 }
 
 // ---- EditMangaModal ----
-function EditMangaModal({ manga, onSave, onClose }: {
+function EditMangaModal({ manga, onSave, onClose, onDelete }: {
   manga: Manga
   onSave: (updated: Manga) => void
   onClose: () => void
+  onDelete: (id: string) => void
 }) {
   const [title, setTitle] = useState(manga.title)
   const [currentVol, setCurrentVol] = useState(manga.currentVol ?? 0)
@@ -502,6 +535,16 @@ function EditMangaModal({ manga, onSave, onClose }: {
           <button onClick={() => onSave({ ...manga, title, currentVol, status, isSeriesComplete, star, author, coverUrl, affiliateUrl })} style={{ width: '100%', padding: '14px', borderRadius: 24, border: 'none', background: '#e05c2a', color: '#fff', fontSize: 15, fontWeight: 700, cursor: 'pointer', marginTop: 4 }}>
             保存する
           </button>
+          <button
+            onClick={() => {
+              if (window.confirm(`「${manga.title}」を本棚から削除しますか？この操作は取り消せません。`)) {
+                onDelete(manga.id)
+              }
+            }}
+            style={{ width: '100%', padding: '12px', borderRadius: 24, border: '1px solid #e05c2a', background: '#fff', color: '#e05c2a', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}
+          >
+            この漫画を削除
+          </button>
         </div>
       </div>
     </div>
@@ -611,7 +654,8 @@ function AuthScreen({ onAuth }: { onAuth: (user: UserProfile) => void }) {
         maxWidth: 400,
         background: '#fff',
         borderRadius: 20,
-        padding: 28,
+        padding: '24px 20px',
+        boxSizing: 'border-box',
         boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
       }}>
         {mode !== 'forgot' && (
@@ -835,7 +879,8 @@ function ResetPasswordScreen({ onComplete }: { onComplete: () => void }) {
         maxWidth: 400,
         background: '#fff',
         borderRadius: 20,
-        padding: 28,
+        padding: '24px 20px',
+        boxSizing: 'border-box',
         boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
       }}>
         <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 4 }}>新しいパスワードを設定</div>
@@ -1156,6 +1201,13 @@ export default function Home() {
     setEditManga(null)
   }
 
+  const handleDeleteManga = async (id: string) => {
+    if (!user) return
+    await supabase.from('mangas').delete().eq('id', id).eq('user_id', user.id)
+    setMangas(prev => prev.filter(m => m.id !== id))
+    setEditManga(null)
+  }
+
   const handleRefreshAll = async () => {
     if (!user || updatingAll) return
     setUpdatingAll(true)
@@ -1168,7 +1220,7 @@ export default function Home() {
   }
 
   const handleFetchRecommendations = async () => {
-    if (loadingRecommend) return
+    if (loadingRecommend || !user) return
     setLoadingRecommend(true)
     setRecommendGroups([])
 
@@ -1186,6 +1238,7 @@ export default function Home() {
 
     const groups: RecommendGroup[] = []
     const seenAuthors = new Set<string>()
+    const excludeTitles = getShownRecommendTitles(user.id)
 
     for (const manga of topMangas) {
       let author = manga.author
@@ -1203,11 +1256,16 @@ export default function Home() {
       setRecommendProgress(`${author} の作品を検索中...`)
       await new Promise(r => setTimeout(r, 400))
 
-      const books = await fetchAuthorRecommends(author, shelfTitles)
+      const books = await fetchAuthorRecommends(author, shelfTitles, excludeTitles)
       if (books.length > 0) {
+        books.forEach(b => excludeTitles.add(b.title))
         groups.push({ sourceManga: manga.title, author, books })
       }
       await new Promise(r => setTimeout(r, 400))
+    }
+
+    if (groups.length > 0) {
+      addShownRecommendTitles(user.id, groups.flatMap(g => g.books.map(b => b.title)))
     }
 
     setRecommendGroups(groups)
@@ -1409,8 +1467,11 @@ export default function Home() {
                           <RakutenBuyButton title={m.title} affiliateUrl={m.affiliateUrl} />
                         </div>
                       </div>
-                      <div style={{ fontSize: 16, fontWeight: 900, color: '#e05c2a', flexShrink: 0 }}>
-                        {m.isFuture ? '予告' : `+${(m.latestVol || 0) - (m.currentVol || 0)}巻`}
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8, flexShrink: 0 }}>
+                        <button onClick={() => setEditManga(m)} style={{ width: 28, height: 28, borderRadius: '50%', border: '1px solid #e8e4df', background: '#fff', cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✏️</button>
+                        <div style={{ fontSize: 16, fontWeight: 900, color: '#e05c2a' }}>
+                          {m.isFuture ? '予告' : `+${(m.latestVol || 0) - (m.currentVol || 0)}巻`}
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -1895,7 +1956,7 @@ export default function Home() {
           </div>
         )}
       </main>
-      {editManga && <EditMangaModal manga={editManga} onSave={handleEditSave} onClose={() => setEditManga(null)} />}
+      {editManga && <EditMangaModal manga={editManga} onSave={handleEditSave} onClose={() => setEditManga(null)} onDelete={handleDeleteManga} />}
     </div>
   )
 }
