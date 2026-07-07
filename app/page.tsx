@@ -962,6 +962,7 @@ export default function Home() {
   const [updatingAll, setUpdatingAll] = useState(false)
   const [editManga, setEditManga] = useState<Manga | null>(null)
   const [promptCopied, setPromptCopied] = useState(false)
+  const [topRatedFilter, setTopRatedFilter] = useState<'five' | 'fourPlus'>('fourPlus')
 
   const [singleTitle, setSingleTitle] = useState('')
   const [singleVol, setSingleVol] = useState(1)
@@ -1364,7 +1365,10 @@ export default function Home() {
   const totalWorks = mangas.filter(m => m.status !== 'wishlist').length
   const totalVols = mangas.filter(m => m.status !== 'wishlist').reduce((s, m) => s + (m.currentVol || 0), 0)
   const unreadMangas = mangas.filter(m => m.latestVol && m.currentVol && m.latestVol > m.currentVol)
-  const topRated = mangas.filter(m => m.rating === 5 && m.status !== 'wishlist')
+  const topRated = mangas
+    .filter(m => m.status !== 'wishlist')
+    .filter(m => topRatedFilter === 'five' ? m.rating === 5 : m.rating >= 4)
+    .sort((a, b) => b.rating - a.rating)
 
   const filteredMangas = mangas
     .filter(m => {
@@ -1908,10 +1912,27 @@ export default function Home() {
             {/* 高評価作品 */}
             <div style={{ background: '#fff', borderRadius: 16, padding: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
               <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>友達におすすめできる漫画</div>
-              <div style={{ fontSize: 13, color: '#999', marginBottom: 16 }}>評価5をつけた作品一覧</div>
+              <div style={{ fontSize: 13, color: '#999', marginBottom: 12 }}>高評価をつけた作品一覧</div>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+                {([['fourPlus', '⭐️4以上'], ['five', '⭐️5のみ']] as const).map(([val, label]) => (
+                  <button
+                    key={val}
+                    onClick={() => setTopRatedFilter(val)}
+                    style={{
+                      padding: '6px 14px', borderRadius: 20, border: '1px solid',
+                      borderColor: topRatedFilter === val ? '#1a1a1a' : '#e8e4df',
+                      background: topRatedFilter === val ? '#1a1a1a' : '#fff',
+                      color: topRatedFilter === val ? '#fff' : '#666',
+                      fontSize: 12, cursor: 'pointer',
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
               {topRated.length === 0 ? (
                 <div style={{ textAlign: 'center', color: '#999', padding: 24 }}>
-                  まだ⭐️5の作品がありません。本棚で評価をつけてみてください！
+                  {topRatedFilter === 'five' ? 'まだ⭐️5の作品がありません。' : 'まだ⭐️4以上の作品がありません。'}本棚で評価をつけてみてください！
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
