@@ -1226,10 +1226,9 @@ export default function Home() {
     setRecommendGroups([])
 
     const shelfTitles = mangas.map(m => m.title)
-    const topMangas = mangas
-      .filter(m => m.rating >= 4 && m.status !== 'wishlist')
-      .sort((a, b) => b.rating - a.rating)
-      .slice(0, 3)
+    const eligibleMangas = mangas.filter(m => m.rating >= 4 && m.status !== 'wishlist')
+    // 評価順に固定せず毎回ランダムに選ぶことで、⭐️4の作品の著者からもおすすめが出るようにする
+    const topMangas = shuffleArray(eligibleMangas).slice(0, 3)
 
     if (topMangas.length === 0) {
       setLoadingRecommend(false)
