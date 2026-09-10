@@ -408,6 +408,48 @@ function RakutenBuyButton({ title, affiliateUrl, size = 'normal' }: { title: str
   )
 }
 
+function HomeUnreadCard({ manga, onEdit, onToggleStar }: { manga: Manga; onEdit: () => void; onToggleStar: () => void }) {
+  const m = manga
+  return (
+    <div style={{ background: '#fff', borderRadius: 12, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 14, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+      <MangaCover manga={m} size={48} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 700, fontSize: 15 }}>
+          {m.title}
+          {m.isFuture
+            ? <span style={{ marginLeft: 8, fontSize: 11, background: '#fff3e0', color: '#e05c2a', borderRadius: 4, padding: '2px 6px' }}>{m.releaseDate?.replace('年', '/').replace('月', '/').replace(/日.*/, '') + '発売予定'}</span>
+            : <span style={{ marginLeft: 8, fontSize: 11, background: '#e05c2a', color: '#fff', borderRadius: 4, padding: '2px 6px' }}>NEW</span>
+          }
+        </div>
+        <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>あなた：{m.currentVol}巻 → 最新：{m.latestVol}巻</div>
+        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <RakutenBuyButton title={m.title} affiliateUrl={m.affiliateUrl} />
+          <button
+            onClick={onToggleStar}
+            aria-label={m.star ? 'お気に入り解除' : 'お気に入り登録'}
+            style={{
+              width: 44, height: 44, borderRadius: '50%', border: '1px solid',
+              borderColor: m.star ? '#e05c2a' : '#e8e4df',
+              background: m.star ? '#fff3ee' : '#fff',
+              color: m.star ? '#e05c2a' : '#ccc',
+              fontSize: 20, cursor: 'pointer', flexShrink: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            {m.star ? '★' : '☆'}
+          </button>
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8, flexShrink: 0 }}>
+        <button onClick={onEdit} style={{ width: 28, height: 28, borderRadius: '50%', border: '1px solid #e8e4df', background: '#fff', cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✏️</button>
+        <div style={{ fontSize: 16, fontWeight: 900, color: '#e05c2a' }}>
+          {m.isFuture ? '予告' : `+${(m.latestVol || 0) - (m.currentVol || 0)}巻`}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ---- EditMangaModal ----
 function EditMangaModal({ manga, onSave, onClose, onDelete }: {
   manga: Manga
@@ -1195,6 +1237,13 @@ export default function Home() {
     setMangas(prev => prev.map(m => m.id === id ? updated : m))
   }
 
+  const toggleStar = async (manga: Manga) => {
+    if (!user) return
+    const updated = { ...manga, star: !manga.star }
+    await upsertToSupabase(updated, user.id)
+    setMangas(prev => prev.map(m => m.id === manga.id ? updated : m))
+  }
+
   const handleEditSave = async (updated: Manga) => {
     if (!user) return
     await upsertToSupabase(updated, user.id)
@@ -1364,6 +1413,9 @@ export default function Home() {
   const totalWorks = mangas.filter(m => m.status !== 'wishlist').length
   const totalVols = mangas.filter(m => m.status !== 'wishlist').reduce((s, m) => s + (m.currentVol || 0), 0)
   const unreadMangas = mangas.filter(m => m.latestVol && m.currentVol && m.latestVol > m.currentVol)
+  const favoriteMangas = mangas.filter(m => m.star && m.status !== 'wishlist')
+  const favoriteUpdates = unreadMangas.filter(m => m.star)
+  const otherUnread = unreadMangas.filter(m => !m.star)
   const topRated = mangas
     .filter(m => m.status !== 'wishlist')
     .filter(m => topRatedFilter === 'five' ? m.rating === 5 : m.rating >= 4)
@@ -1448,38 +1500,39 @@ export default function Home() {
               ))}
             </div>
 
-            {unreadMangas.length > 0 && (
-              <section>
-                <div style={{ fontSize: 12, color: '#999', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span>📦</span> 未読新刊 — 本屋モード
+            <section>
+              <div style={{ fontSize: 12, color: '#999', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>⭐</span> お気に入りの最新情報
+              </div>
+              {favoriteMangas.length === 0 ? (
+                <div style={{ background: '#fff', borderRadius: 16, padding: 28, textAlign: 'center', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+                  <div style={{ fontSize: 28, marginBottom: 8, color: '#ccc' }}>☆</div>
+                  <div style={{ color: '#999', fontSize: 13 }}>★ボタンで漫画をお気に入り登録しよう</div>
                 </div>
+              ) : favoriteUpdates.length === 0 ? (
+                <div style={{ background: '#fff', borderRadius: 16, padding: 24, textAlign: 'center', boxShadow: '0 1px 3px rgba(0,0,0,0.06)', color: '#999', fontSize: 13 }}>
+                  お気に入り作品の新刊情報はまだありません
+                </div>
+              ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {unreadMangas.map(m => (
-                    <div key={m.id} style={{ background: '#fff', borderRadius: 12, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 14, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-                      <MangaCover manga={m} size={48} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 700, fontSize: 15 }}>
-                          {m.title}
-                          {m.isFuture
-                            ? <span style={{ marginLeft: 8, fontSize: 11, background: '#fff3e0', color: '#e05c2a', borderRadius: 4, padding: '2px 6px' }}>{m.releaseDate?.replace('年', '/').replace('月', '/').replace(/日.*/, '') + '発売予定'}</span>
-                            : <span style={{ marginLeft: 8, fontSize: 11, background: '#e05c2a', color: '#fff', borderRadius: 4, padding: '2px 6px' }}>NEW</span>
-                          }
-                        </div>
-                        <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>あなた：{m.currentVol}巻 → 最新：{m.latestVol}巻</div>
-                        <div style={{ marginTop: 8 }}>
-                          <RakutenBuyButton title={m.title} affiliateUrl={m.affiliateUrl} />
-                        </div>
-                      </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8, flexShrink: 0 }}>
-                        <button onClick={() => setEditManga(m)} style={{ width: 28, height: 28, borderRadius: '50%', border: '1px solid #e8e4df', background: '#fff', cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✏️</button>
-                        <div style={{ fontSize: 16, fontWeight: 900, color: '#e05c2a' }}>
-                          {m.isFuture ? '予告' : `+${(m.latestVol || 0) - (m.currentVol || 0)}巻`}
-                        </div>
-                      </div>
-                    </div>
+                  {favoriteUpdates.map(m => (
+                    <HomeUnreadCard key={m.id} manga={m} onEdit={() => setEditManga(m)} onToggleStar={() => toggleStar(m)} />
                   ))}
                 </div>
-              </section>
+              )}
+            </section>
+
+            {otherUnread.length > 0 && (
+              <details open={favoriteMangas.length === 0}>
+                <summary style={{ cursor: 'pointer', fontSize: 12, color: '#999', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  📦 その他の未読 ({otherUnread.length}件)
+                </summary>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+                  {otherUnread.map(m => (
+                    <HomeUnreadCard key={m.id} manga={m} onEdit={() => setEditManga(m)} onToggleStar={() => toggleStar(m)} />
+                  ))}
+                </div>
+              </details>
             )}
 
             {mangas.length === 0 && (
@@ -1597,6 +1650,20 @@ export default function Home() {
                       <button onClick={() => setEditManga(m)} style={{ width: 32, height: 32, borderRadius: '50%', border: '1px solid #e8e4df', background: '#fff', cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✏️</button>
                       <button onClick={() => refreshOne(m.id)} disabled={isFetching} style={{ width: 32, height: 32, borderRadius: '50%', border: '1px solid #e8e4df', background: '#fff', cursor: isFetching ? 'default' : 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: isFetching ? 0.5 : 1 }}>
                         {isFetching ? '⏳' : '🔄'}
+                      </button>
+                      <button
+                        onClick={() => toggleStar(m)}
+                        aria-label={m.star ? 'お気に入り解除' : 'お気に入り登録'}
+                        style={{
+                          width: 44, height: 44, borderRadius: '50%', border: '1px solid',
+                          borderColor: m.star ? '#e05c2a' : '#e8e4df',
+                          background: m.star ? '#fff3ee' : '#fff',
+                          color: m.star ? '#e05c2a' : '#ccc',
+                          cursor: 'pointer', fontSize: 20,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        }}
+                      >
+                        {m.star ? '★' : '☆'}
                       </button>
                     </div>
                   </div>
