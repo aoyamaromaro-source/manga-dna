@@ -108,12 +108,40 @@ async function loadFromSupabase(userId: string): Promise<Manga[]> {
     .select('*')
     .eq('user_id', userId)
     .order('registered_at', { ascending: false })
+  if (error) console.error('loadFromSupabase failed:', error)
   if (error || !data) return []
   return data.map(fromRow)
 }
 
-async function upsertToSupabase(manga: Manga, userId: string) {
-  await supabase.from('mangas').upsert(toRow(manga, userId))
+// 保存に失敗した場合は呼び出し元に伝える（楽観的にstateだけ更新して実データが消えるのを防ぐ）
+async function upsertToSupabase(manga: Manga, userId: string): Promise<boolean> {
+  const { error } = await supabase.from('mangas').upsert(toRow(manga, userId))
+  if (error) {
+    console.error('upsertToSupabase failed:', error)
+    return false
+  }
+  return true
+}
+
+// 楽天再検索が一時的に失敗しても、既に持っている正しい情報（表紙・著者など）を空値で上書きしない
+function mergeFetchedInfo(manga: Manga, info: {
+  latestVol: number | null
+  releaseDate: string
+  isFuture: boolean
+  coverUrl: string
+  author: string
+  affiliateUrl: string
+}): Manga {
+  return {
+    ...manga,
+    latestVol: info.latestVol ?? manga.latestVol,
+    releaseDate: info.releaseDate || manga.releaseDate,
+    isFuture: info.latestVol != null ? info.isFuture : manga.isFuture,
+    coverUrl: info.coverUrl || manga.coverUrl,
+    author: info.author || manga.author,
+    affiliateUrl: info.affiliateUrl || manga.affiliateUrl,
+    fetchedAt: Date.now(),
+  }
 }
 
 // ---- Parser ----
@@ -1091,9 +1119,10 @@ export default function Home() {
     if (!manga) return
     setFetchingIds(prev => new Set(prev).add(id))
     const info = await fetchLatestVol(manga.title)
-    const updated = { ...manga, ...info, fetchedAt: Date.now() }
-    await upsertToSupabase(updated, user.id)
-    setMangas(prev => prev.map(m => m.id === id ? updated : m))
+    const updated = mergeFetchedInfo(manga, info)
+    const ok = await upsertToSupabase(updated, user.id)
+    if (ok) setMangas(prev => prev.map(m => m.id === id ? updated : m))
+    else alert(`「${manga.title}」の更新の保存に失敗しました。通信状況を確認してもう一度お試しください。`)
     setFetchingIds(prev => { const s = new Set(prev); s.delete(id); return s })
   }, [mangas, user])
 
@@ -1130,6 +1159,7 @@ export default function Home() {
     setRegisterProgress(0)
     const existing = await loadFromSupabase(user.id)
     const newMangas: Manga[] = []
+    const failedTitles: string[] = []
     for (let i = 0; i < parsed.length; i++) {
       const p = parsed[i]
       const existingManga = existing.find(m => m.title === p.title)
@@ -1151,17 +1181,19 @@ export default function Home() {
         affiliateUrl: existingManga?.affiliateUrl ?? '',
         author: existingManga?.author ?? '',
       }
-      newMangas.push(manga)
-      await upsertToSupabase(manga, user.id)
+      const ok = await upsertToSupabase(manga, user.id)
+      if (ok) newMangas.push(manga)
+      else failedTitles.push(manga.title)
       setRegisterProgress(Math.round(((i + 1) / parsed.length) * 50))
     }
     const needFetch = newMangas.filter(m => !m.fetchedAt)
     for (let i = 0; i < needFetch.length; i++) {
       const nm = needFetch[i]
       const info = await fetchLatestVol(nm.title)
-      const updated = { ...nm, ...info, fetchedAt: Date.now() }
-      await upsertToSupabase(updated, user.id)
-      setMangas(prev => prev.map(m => m.id === nm.id ? updated : m))
+      const updated = mergeFetchedInfo(nm, info)
+      const ok = await upsertToSupabase(updated, user.id)
+      if (ok) setMangas(prev => prev.map(m => m.id === nm.id ? updated : m))
+      else failedTitles.push(nm.title)
       setRegisterProgress(50 + Math.round(((i + 1) / needFetch.length) * 50))
       await new Promise(r => setTimeout(r, 400))
     }
@@ -1171,6 +1203,9 @@ export default function Home() {
     setParsed([])
     setMemo('')
     setTab('home')
+    if (failedTitles.length > 0) {
+      alert(`以下の作品の保存に失敗しました。通信状況を確認してもう一度登録してください。\n\n${failedTitles.join('\n')}`)
+    }
   }
 
   const handleSingleRegister = async () => {
@@ -1192,11 +1227,17 @@ export default function Home() {
       affiliateUrl: singlePreFill?.affiliateUrl || (existing?.affiliateUrl ?? ''),
       author: singlePreFill?.author || (existing?.author ?? ''),
     }
-    await upsertToSupabase(manga, user.id)
+    const savedInitial = await upsertToSupabase(manga, user.id)
+    if (!savedInitial) {
+      alert(`「${manga.title}」の保存に失敗しました。通信状況を確認してもう一度お試しください。`)
+      setSingleRegistering(false)
+      return
+    }
     if (!manga.fetchedAt) {
       const info = await fetchLatestVol(manga.title)
-      const updated = { ...manga, ...info, fetchedAt: Date.now() }
-      await upsertToSupabase(updated, user.id)
+      const updated = mergeFetchedInfo(manga, info)
+      const ok = await upsertToSupabase(updated, user.id)
+      if (!ok) alert(`「${manga.title}」の最新刊情報の保存に失敗しました。本棚から「🔄」で再取得してください。`)
       setMangas(prev => {
         const exists = prev.find(m => m.id === updated.id)
         if (exists) return prev.map(m => m.id === updated.id ? updated : m)
@@ -1403,7 +1444,12 @@ export default function Home() {
       affiliateUrl: selectedSearchManga.affiliateUrl,
       author: selectedSearchManga.author,
     }
-    await upsertToSupabase(manga, user.id)
+    const ok = await upsertToSupabase(manga, user.id)
+    if (!ok) {
+      alert(`「${manga.title}」の保存に失敗しました。通信状況を確認してもう一度お試しください。`)
+      setSearchRegistering(false)
+      return
+    }
     setMangas(prev => [manga, ...prev])
     setSelectedSearchManga(null)
     setSearchRegistering(false)
@@ -1794,7 +1840,11 @@ export default function Home() {
                       latestVol: null, releaseDate: '', isFuture: false, fetchedAt: null, coverUrl: '',
                       affiliateUrl: '', author: '',
                     }
-                    await upsertToSupabase(manga, user.id)
+                    const ok = await upsertToSupabase(manga, user.id)
+                    if (!ok) {
+                      alert(`「${manga.title}」の保存に失敗しました。通信状況を確認してもう一度お試しください。`)
+                      return
+                    }
                     setMangas(prev => [manga, ...prev])
                     setSingleTitle('')
                     setTab('shelf')
