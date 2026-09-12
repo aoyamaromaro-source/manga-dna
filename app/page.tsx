@@ -1163,7 +1163,7 @@ export default function Home() {
     for (let i = 0; i < parsed.length; i++) {
       const p = parsed[i]
       const existingManga = existing.find(m => m.title === p.title)
-      const id = existingManga?.id || `${Date.now()}_${i}`
+      const id = existingManga?.id || `${Date.now() * 1000 + i}`
       const manga: Manga = {
         id, title: p.title || '',
         currentVol: p.currentVol ?? null, maxVol: null,
@@ -1212,7 +1212,7 @@ export default function Home() {
     if (!singleTitle.trim() || !user) return
     setSingleRegistering(true)
     const existing = mangas.find(m => m.title === singleTitle.trim())
-    const id = existing?.id || `${Date.now()}_single`
+    const id = existing?.id || `${Date.now()}`
     const manga: Manga = {
       id, title: singleTitle.trim(),
       currentVol: singleVol, maxVol: null,
@@ -1424,7 +1424,7 @@ export default function Home() {
   const handleSearchRegister = async () => {
     if (!selectedSearchManga || !user || searchRegistering) return
     setSearchRegistering(true)
-    const id = `${Date.now()}_search`
+    const id = `${Date.now()}`
     const manga: Manga = {
       id,
       title: selectedSearchManga.title,
@@ -1832,7 +1832,7 @@ export default function Home() {
                   <div style={{ fontSize: 13, color: '#666', marginBottom: 10 }}>読みたいリストに追加する場合</div>
                   <button onClick={async () => {
                     if (!singleTitle.trim() || !user) return
-                    const id = `${Date.now()}_wish`
+                    const id = `${Date.now()}`
                     const manga: Manga = {
                       id, title: singleTitle.trim(), currentVol: null, maxVol: null,
                       isSeriesComplete: false, status: 'wishlist', isMidVolume: false,
