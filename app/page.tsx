@@ -117,7 +117,7 @@ async function loadFromSupabase(userId: string): Promise<Manga[]> {
 async function upsertToSupabase(manga: Manga, userId: string): Promise<boolean> {
   const { error } = await supabase.from('mangas').upsert(toRow(manga, userId))
   if (error) {
-    console.error('upsertToSupabase failed:', error)
+    console.error(`upsertToSupabase failed: [${error.code}] ${error.message} | details: ${error.details} | hint: ${error.hint}`)
     return false
   }
   return true
