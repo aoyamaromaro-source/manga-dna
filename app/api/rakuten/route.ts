@@ -156,6 +156,15 @@ function stripVolumeSuffix(title: string): string {
     .trim() || title || ''
 }
 
+// タイトル末尾の巻数のみを巻数として認識する（「50周年」等、タイトル中間の数字を誤って拾わないように）
+function extractVolumeNumber(title: string): number | null {
+  const m = (title || '').match(/[（(]?第?([\d０-９]+)[巻冊号]?[）)]?[\s　]*$/)
+  if (!m) return null
+  const numStr = m[1].replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0) - 0xfee0))
+  const n = parseInt(numStr, 10)
+  return Number.isNaN(n) ? null : n
+}
+
 export async function GET(req: NextRequest) {
   const title = req.nextUrl.searchParams.get('title')
   const author = req.nextUrl.searchParams.get('author')
@@ -236,8 +245,7 @@ export async function GET(req: NextRequest) {
         const baseTitle = stripVolumeSuffix(Item.title)
         if (!baseTitle) continue
 
-        const volMatch = (Item.title as string)?.match(/(\d+)/)
-        const vol = volMatch ? parseInt(volMatch[1]) : null
+        const vol = extractVolumeNumber(Item.title)
 
         if (!seen.has(baseTitle)) {
           seen.set(baseTitle, {
@@ -287,8 +295,8 @@ export async function GET(req: NextRequest) {
     // 1巻の表紙を優先取得
     for (const { Item } of items) {
       if (!author && Item.author) author = Item.author
-      const volMatch = Item.title?.match(/(\d+)/)
-      if (volMatch && parseInt(volMatch[1]) === 1) {
+      const vol = extractVolumeNumber(Item.title)
+      if (vol === 1) {
         coverUrl = Item.largeImageUrl || Item.mediumImageUrl || ''
         break
       }
@@ -297,9 +305,8 @@ export async function GET(req: NextRequest) {
     // 最新巻を探す
     for (const { Item } of items) {
       if (!author && Item.author) author = Item.author
-      const volMatch = Item.title?.match(/(\d+)/)
-      if (volMatch) {
-        const v = parseInt(volMatch[1])
+      const v = extractVolumeNumber(Item.title)
+      if (v !== null) {
         if (v > latestVol) {
           latestVol = v
           releaseDate = Item.salesDate || ''
